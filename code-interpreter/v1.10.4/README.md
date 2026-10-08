@@ -29,6 +29,8 @@ seven services plus Redis and MinIO (S3 storage). LibreChat sends code to the
 - Git and [Git LFS](https://git-lfs.com) (`git lfs version`).
 - For the default sandbox: hardware virtualization exposed as `/dev/kvm`
   (`ls -l /dev/kvm`). Bare metal, or a VM with nested virtualization.
+  Without it (for example Docker Desktop on Windows), use the no-KVM mode in
+  step 5.
 - About 7 GB of disk for the archives plus the loaded images.
 
 ## 1. Download the archives
@@ -110,17 +112,58 @@ docker compose -f docker-compose.yaml -f docker-compose.images.yml ps
 `service-worker` waits until `sandbox-runner` reports healthy, which can take
 a minute or two on first start.
 
-Without `/dev/kvm` (direct NsJail sandbox, weaker isolation, development
-only): the direct runner reads the Python/Node/Bun runtimes from the host,
-so build them first with the original repo's `./build-packages.sh` (it fills
-`./data/pkgs`; this takes a while). Then:
+### Without `/dev/kvm` (no-KVM mode, for testing)
 
-```bash
-export KVM_ENABLED=false
-export KVM_DEVICE_PATH=/dev/null      # the Compose file always maps a KVM device
-export CODEAPI_SANDBOX_RUNNER_IMAGE=code-interpreter-sandbox-runner-direct
-docker compose -f docker-compose.yaml -f docker-compose.images.yml up -d
-```
+Use this on Docker Desktop for Windows or Mac, or any host without `/dev/kvm`.
+Sandboxed code shares the host kernel, so it is weaker isolation: use it only
+on your own machine, never for code from people you don't trust.
+
+On Windows, run every command in a WSL2 Ubuntu terminal (with Docker
+Desktop's WSL integration turned on for that distro), and clone both repos
+into your Ubuntu home folder (`~/`), not under `/mnt/c`. Cloning with Git for
+Windows can turn the `.sh` scripts' line endings into CRLF, which breaks them.
+
+1. Copy the no-KVM override next to the other one:
+
+   ```bash
+   cp ../Docker-files/code-interpreter/v1.10.4/docker-compose.direct.yml .
+   ```
+
+   It switches the runner to `code-interpreter-sandbox-runner-direct`, maps
+   `/dev/null` in place of `/dev/kvm`, and adds the Linux capabilities,
+   seccomp profile and health check that the direct runner needs (taken from
+   upstream's `docker-compose.mac.yml`). Without them it restarts in a loop
+   with `unshare: Operation not permitted`.
+
+2. Build the language runtimes into `./data/pkgs`. The direct runner reads
+   them from there; they are not inside the images. The script runs the build
+   in a temporary Docker container, so it only needs Docker and internet.
+
+   ```bash
+   ./build-packages.sh
+   ```
+
+   The full build (Python with its data-science packages, Node, Bun and their
+   npm packages) is slow: expect a long wait the first time. For a quicker
+   first test, build Python alone:
+
+   ```bash
+   SKIP_PYTHON_PACKAGES=1 SKIP_JS_PACKAGES=1 SKIP_NODE=1 SKIP_BUN=1 ./build-packages.sh
+   ```
+
+   Run the full build later to add the rest; the sandbox only offers the
+   languages it finds in `./data/pkgs`, read when it starts.
+
+3. Start with all three Compose files:
+
+   ```bash
+   docker compose -f docker-compose.yaml -f docker-compose.images.yml \
+     -f docker-compose.direct.yml up -d
+   ```
+
+   Use the same three `-f` flags for `ps`, `logs` and `down`. After building
+   more runtimes, restart the runner with
+   `docker compose -f docker-compose.yaml -f docker-compose.images.yml -f docker-compose.direct.yml restart sandbox-runner`.
 
 ## 6. Check it works
 

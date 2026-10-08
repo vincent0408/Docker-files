@@ -40,10 +40,8 @@ services:
     pull_policy: never
   sandbox-runner:
     build: !reset null
-    # KVM_ENABLED=true (default, needs /dev/kvm): code-interpreter-sandbox-runner.
-    # KVM_ENABLED=false: set CODEAPI_SANDBOX_RUNNER_IMAGE=code-interpreter-sandbox-runner-direct;
-    # it also needs runtime packages in SANDBOX_PACKAGES_PATH (see README.md).
-    image: ghcr.io/librechat-ai/${CODEAPI_SANDBOX_RUNNER_IMAGE:-code-interpreter-sandbox-runner}:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    # Needs /dev/kvm. Without it, add docker-compose.direct.yml (see README.md).
+    image: ghcr.io/librechat-ai/code-interpreter-sandbox-runner:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
     pull_policy: never
   minio:
     image: cgr.dev/chainguard/minio:latest

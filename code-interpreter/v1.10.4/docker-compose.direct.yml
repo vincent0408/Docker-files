@@ -1,0 +1,46 @@
+# No-KVM (direct NsJail) mode for hosts without /dev/kvm, such as Docker
+# Desktop on Windows. Testing and local development only: sandboxed code
+# shares the host kernel, so do not expose this to people you don't trust.
+#
+# Use it after docker-compose.images.yml, from a checkout of
+# LibreChat-AI/code-interpreter at tag v1.10.4:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.images.yml \
+#     -f docker-compose.direct.yml up -d
+#
+# Needs the language runtimes in ./data/pkgs first (./build-packages.sh).
+# The capabilities and seccomp profile match upstream's docker-compose.mac.yml,
+# which runs the same direct mode.
+
+services:
+  sandbox-runner:
+    image: ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    # The base file always maps a KVM device; satisfy it without real KVM.
+    devices: !override
+      - /dev/null:/dev/kvm
+    environment:
+      - KVM_ENABLED=false
+    # The default check script is not reachable once the runner has switched
+    # into the sandbox root filesystem; probe the API with its bun instead.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bun -e "fetch('http://localhost:2000/api/v2/runtimes').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+    security_opt:
+      - seccomp=./seccomp/nsjail.json
+    cap_add:
+      - SYS_ADMIN
+      - SYS_CHROOT
+      - SYS_PTRACE
+      - SETUID
+      - SETGID
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - DAC_READ_SEARCH
+      - CHOWN
+      - FOWNER
+      - FSETID
+      - KILL
+      - SETFCAP
+      - MKNOD
