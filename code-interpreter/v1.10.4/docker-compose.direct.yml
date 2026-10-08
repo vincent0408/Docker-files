@@ -20,6 +20,15 @@ services:
       - /dev/null:/dev/kvm
     environment:
       - KVM_ENABLED=false
+      # Set in the image's sandbox-build stage but not carried into the
+      # published direct image; without it every run fails with
+      # "Cannot find module '/sandbox_api/.build/anonymous-pipes.node'".
+      - SANDBOX_PIPE_ADDON=/usr/local/lib/anonymous-pipes.node
+      # Off, as in upstream's docker-compose.mac.yml for Docker Desktop. On
+      # hosts without a usable cgroup v2 tree every run otherwise fails with
+      # "Couldn't initialize cgroup 2 user namespace". With this off, per-run
+      # memory and process-count limits are not enforced.
+      - SANDBOX_USE_CGROUPV2=false
     # The default check script is not reachable once the runner has switched
     # into the sandbox root filesystem; probe the API with its bun instead.
     healthcheck:

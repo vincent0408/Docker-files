@@ -129,11 +129,23 @@ Windows can turn the `.sh` scripts' line endings into CRLF, which breaks them.
    cp ../Docker-files/code-interpreter/v1.10.4/docker-compose.direct.yml .
    ```
 
-   It switches the runner to `code-interpreter-sandbox-runner-direct`, maps
-   `/dev/null` in place of `/dev/kvm`, and adds the Linux capabilities,
-   seccomp profile and health check that the direct runner needs (taken from
-   upstream's `docker-compose.mac.yml`). Without them it restarts in a loop
-   with `unshare: Operation not permitted`.
+   It switches the runner to `code-interpreter-sandbox-runner-direct` and
+   fixes what that image needs outside a microVM:
+
+   - `/dev/null` mapped in place of `/dev/kvm`.
+   - The Linux capabilities and seccomp profile from upstream's
+     `docker-compose.mac.yml`. Without them the runner restarts in a loop
+     with `unshare: Operation not permitted`.
+   - A health check that works after the runner switches into the sandbox
+     filesystem. Without it the worker never starts.
+   - `SANDBOX_PIPE_ADDON`, which the published direct image is missing.
+     Without it every run fails with `Cannot find module
+     '/sandbox_api/.build/anonymous-pipes.node'`.
+   - `SANDBOX_USE_CGROUPV2=false`, as upstream does for Docker Desktop.
+     Without it hosts lacking a usable cgroup v2 tree fail every run with
+     `Couldn't initialize cgroup 2 user namespace`. The cost: per-run memory
+     and process-count limits are not enforced, one more reason to keep this
+     mode for testing.
 
 2. Build the language runtimes into `./data/pkgs`. The direct runner reads
    them from there; they are not inside the images. The script runs the build
@@ -174,11 +186,21 @@ curl localhost:3190/health             # OK
 
 curl -s localhost:3112/v1/exec \
   -H 'Content-Type: application/json' \
-  -d '{"lang":"py","code":"print(6*7)"}'
+  -d '{"lang":"py","code":"print(6*7)\nopen(\"/mnt/data/hello.txt\",\"w\").write(\"hi\")"}'
 ```
 
-The last call should return output containing `42`. Logs:
-`docker compose -f docker-compose.yaml -f docker-compose.images.yml logs -f api service-worker sandbox-runner`.
+A working stack answers with `"stdout":"42\n"`, `"code":0` and a `files`
+entry for `hello.txt`. To download that file, use the `session_id` and the
+file's `id` from the response:
+
+```bash
+curl "localhost:3112/v1/download/<session_id>/<file id>?kind=user"   # hi
+```
+
+If `code` is `255` with empty output, NsJail failed to start the run; the
+reason is in `docker logs sandbox-runner`. Logs for everything:
+`docker compose -f docker-compose.yaml -f docker-compose.images.yml logs -f api service-worker sandbox-runner`
+(add `-f docker-compose.direct.yml` in no-KVM mode).
 
 ## 7. Point LibreChat at it
 
