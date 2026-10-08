@@ -1,0 +1,49 @@
+# Compose override that runs the code-interpreter v1.10.4 stack from the
+# images in this folder instead of building them. Adapted from the
+# "Prebuilt images" section of the code-interpreter README.
+#
+# Use it from a checkout of LibreChat-AI/code-interpreter at tag v1.10.4,
+# after `docker load`-ing the archives (see README.md next to this file):
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.images.yml up -d
+#
+# Needs Docker Compose 2.24.4 or later for `!reset`.
+#
+# pull_policy: never makes Compose use the loaded images and fail fast if one
+# is missing, rather than trying to download it from GHCR. redis and minio are
+# not in this folder and are still pulled from public registries.
+#
+# Upstream's quay.io/minio/minio no longer allows anonymous pulls (MinIO
+# stopped publishing free community images), so minio is swapped for
+# Chainguard's free MinIO build.
+
+services:
+  api:
+    build: !reset null
+    image: ghcr.io/librechat-ai/code-interpreter-api:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    pull_policy: never
+  service-worker:
+    build: !reset null
+    image: ghcr.io/librechat-ai/code-interpreter-worker:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    pull_policy: never
+  file_server:
+    build: !reset null
+    image: ghcr.io/librechat-ai/code-interpreter-file-server:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    pull_policy: never
+  egress_gateway:
+    build: !reset null
+    image: ghcr.io/librechat-ai/code-interpreter-egress-gateway:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    pull_policy: never
+  tool_call_server:
+    build: !reset null
+    image: ghcr.io/librechat-ai/code-interpreter-tool-call-server:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    pull_policy: never
+  sandbox-runner:
+    build: !reset null
+    # KVM_ENABLED=true (default, needs /dev/kvm): code-interpreter-sandbox-runner.
+    # KVM_ENABLED=false: set CODEAPI_SANDBOX_RUNNER_IMAGE=code-interpreter-sandbox-runner-direct;
+    # it also needs runtime packages in SANDBOX_PACKAGES_PATH (see README.md).
+    image: ghcr.io/librechat-ai/${CODEAPI_SANDBOX_RUNNER_IMAGE:-code-interpreter-sandbox-runner}:${CODEAPI_IMAGE_TAG:-sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24}
+    pull_policy: never
+  minio:
+    image: cgr.dev/chainguard/minio:latest
