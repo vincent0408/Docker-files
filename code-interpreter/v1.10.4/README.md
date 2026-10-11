@@ -178,6 +178,10 @@ virtualization as supported and Docker Desktop on Windows 10 as not.
 These steps were not tested on Windows hardware for this repo; the checks in
 B3 tell you whether your machine can do it before you change anything else.
 
+Setting this up with an AI agent? Point it at
+[AGENT-KVM-SETUP.md](AGENT-KVM-SETUP.md): the same steps as agent
+instructions, with the questions it must ask you before changing anything.
+
 ### Settings to make
 
 | Where | Setting | Why |
