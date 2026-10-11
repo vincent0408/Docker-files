@@ -31,6 +31,8 @@ seven services plus Redis and MinIO (S3 storage). LibreChat sends code to the
   (`ls -l /dev/kvm`). Bare metal, or a VM with nested virtualization.
   On Windows 11, WSL2 can provide it: see [Windows (WSL2)](#windows-wsl2).
   Without it, use the no-KVM mode in step 5.
+- Running it on a server for a LibreChat elsewhere: see
+  [RHEL server + LibreChat on your own computer](#rhel-server--librechat-on-your-own-computer).
 - About 7 GB of disk for the archives plus the loaded images.
 
 ## Windows (WSL2)
@@ -168,6 +170,186 @@ Set-VMProcessor -VMName <vm-name> -ExposeVirtualizationExtensions $true
 
 If neither works, use the no-KVM mode in step 5. It runs on Docker Desktop
 but with weaker isolation, for testing only.
+
+## RHEL server + LibreChat on your own computer
+
+Run the code interpreter on a RHEL 8/9 server and keep LibreChat on your
+laptop or desktop. LibreChat reaches the server's API through an SSH tunnel,
+so nothing but SSH is exposed: with the default `LOCAL_MODE=true` the API has
+no authentication, and anyone who can reach port 3112 could run code on the
+server.
+
+```text
+your computer                              RHEL server
+LibreChat ──► localhost:3112 ══ SSH ══►  127.0.0.1:3112  code-interpreter api
+                                          (every other port: 127.0.0.1 only)
+```
+
+> The RHEL-specific commands (dnf, firewalld, SELinux) follow Red Hat's and
+> Docker's documentation but were not run on RHEL for this repo. The
+> server override, the SSH tunnel and the container route through
+> `host.docker.internal` were tested on Linux.
+
+### What you need
+
+| What | Notes |
+|---|---|
+| RHEL 8 or 9, x86_64 | 4+ vCPUs and 8 GB+ RAM recommended; the sandbox microVM alone is configured with 2 vCPUs and 2 GB. ~10 GB free disk. |
+| `/dev/kvm` on the server | Bare metal, or a VM whose hypervisor exposes nested virtualization (VMware: "Expose hardware assisted virtualization to the guest OS"; KVM/libvirt hosts: nested enabled; cloud: an instance type that supports nested virtualization or bare metal). Without it, the no-KVM mode in step 5 works, for testing only. |
+| Docker CE + Compose plugin | From Docker's RHEL repository (R2). Not Podman. |
+| `git`, `git-lfs`, `openssl`, `curl` | `dnf` packages. |
+| This repo's archives (~1.9 GB without the direct runner) and the `code-interpreter` repo at `v1.10.4` | As in steps 1–3. |
+| `redis:7-alpine`, `cgr.dev/chainguard/minio` | Pulled on first start. No internet on the server? See R6. |
+| SSH access from your computer to the server | Windows 10/11, macOS and Linux all include an `ssh` client. |
+
+KVM mode needs no `build-packages.sh`; the runtimes are in the image.
+
+### R1. Check for KVM (on the server)
+
+```bash
+grep -cE 'vmx|svm' /proc/cpuinfo   # more than 0: the CPU exposes virtualization
+ls -l /dev/kvm
+```
+
+If `/dev/kvm` is missing but the first command prints a number above 0, load
+the module (`sudo modprobe kvm_intel` or `sudo modprobe kvm_amd`) and check
+again. If the first command prints `0`, the server (or its hypervisor) does
+not expose virtualization: fix that, or use no-KVM mode.
+
+### R2. Install Docker CE and tools
+
+RHEL ships Podman by default, and it conflicts with Docker CE's packages, so
+remove it first (skip this if other things on the server use Podman, and
+ask whoever runs them):
+
+```bash
+sudo dnf remove -y podman runc buildah
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo dnf install -y git git-lfs openssl curl
+sudo usermod -aG docker,kvm $USER
+```
+
+Log out and back in for the groups, then check:
+
+```bash
+docker compose version          # needs 2.24.4 or later
+docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
+```
+
+If `git-lfs` is not found, enable the AppStream repository
+(`sudo subscription-manager repos --list-enabled`), or skip it and copy the
+archives over from your computer instead:
+`scp code-interpreter/v1.10.4/*.tar.gz code-interpreter/v1.10.4/SHA256SUMS <user>@<server>:~/Docker-files/code-interpreter/v1.10.4/`.
+
+### R3. Set up the code interpreter (on the server)
+
+Follow steps 1–4 above in your home folder (use the `--exclude` variant to
+skip the direct runner). Then also copy the server override:
+
+```bash
+cp ../Docker-files/code-interpreter/v1.10.4/docker-compose.server.yml .
+```
+
+`docker-compose.server.yml` publishes every port on `127.0.0.1` only. The
+upstream Compose file publishes all of them on every interface, including
+the sandbox runner (which would let anyone skip the API), Redis (password
+`localdev`) and MinIO (`minioadmin`/`minioadmin`). Docker's published ports
+also bypass firewalld, so a firewall rule alone does not protect them.
+
+Start it with three files:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.images.yml \
+  -f docker-compose.server.yml up -d
+docker compose -f docker-compose.yaml -f docker-compose.images.yml \
+  -f docker-compose.server.yml ps
+curl localhost:3112/v1/health     # OK
+```
+
+Run the step 6 checks on the server too.
+
+After a reboot, Docker itself starts again (`systemctl enable` above), but
+upstream's Compose file only gives the sandbox runner a restart policy. Run
+the same `up -d` command after a reboot, or add `restart: unless-stopped` to
+each service in `docker-compose.server.yml` to bring them all back
+automatically.
+
+SELinux: Docker CE does not turn on SELinux labeling for containers by
+default, so the `/dev/kvm` device and bind mounts work as is. If you
+enabled `"selinux-enabled": true` in `/etc/docker/daemon.json` and the
+runner fails, check `sudo ausearch -m avc -ts recent`.
+
+firewalld needs no change: only SSH (open by default) is used.
+
+### R4. Open the tunnel (on your computer)
+
+```bash
+ssh -N -L 3112:127.0.0.1:3112 <user>@<server>
+```
+
+Leave it running. It forwards `localhost:3112` on your computer to the API on
+the server. Check from another terminal: `curl localhost:3112/v1/health`.
+Add `-o ServerAliveInterval=30` to keep it from idling out, or use `autossh`
+to reconnect it automatically.
+
+If LibreChat runs in Docker on a **Linux** computer, a container cannot reach
+your computer's `127.0.0.1`. Make the tunnel listen on Docker's bridge
+address as well:
+
+```bash
+ssh -N -L 172.17.0.1:3112:127.0.0.1:3112 <user>@<server>
+```
+
+On Docker Desktop (Windows, macOS) the plain command works.
+
+### R5. Point LibreChat at it (on your computer)
+
+In LibreChat's `.env`:
+
+| LibreChat runs | Setting |
+|---|---|
+| Directly (`npm run backend`) | `LIBRECHAT_CODE_BASEURL=http://localhost:3112/v1` |
+| In Docker | `LIBRECHAT_CODE_BASEURL=http://host.docker.internal:3112/v1` |
+
+For Docker, the LibreChat service needs `host.docker.internal` mapped; if its
+Compose file does not already have it, add to the `api` service:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Restart LibreChat and enable the code interpreter on an agent. Its runs now
+execute on the server; the tunnel must be open whenever you use it.
+
+### R6. Server without internet access
+
+Everything the server needs can be carried over as files. On a computer with
+internet and Docker:
+
+```bash
+docker pull redis:7-alpine
+docker pull cgr.dev/chainguard/minio:latest
+docker save redis:7-alpine cgr.dev/chainguard/minio:latest | gzip > deps.tar.gz
+```
+
+Copy `deps.tar.gz`, this folder's archives and a checkout of the
+`code-interpreter` repo (`git clone --branch v1.10.4 --depth 1 …`, then
+`scp -r`) to the server, and run `docker load -i deps.tar.gz` there along with
+step 2. Docker CE itself can be installed from downloaded RPMs (Docker's
+"Install from a package" instructions).
+
+### Exposing the API without a tunnel
+
+Only do this with authentication on: set `LOCAL_MODE=false` and configure an
+auth provider (the original repo's `scripts/setup-local-auth-env.js` writes
+LibreChat JWT settings into both `.env` files), put TLS in front of it (a
+reverse proxy), and then set `CODEAPI_API_BIND=0.0.0.0` before starting so
+the server override publishes port 3112 on all interfaces. This path was not
+tested for this repo.
 
 ## 1. Download the archives
 
