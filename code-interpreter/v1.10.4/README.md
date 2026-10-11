@@ -29,9 +29,145 @@ seven services plus Redis and MinIO (S3 storage). LibreChat sends code to the
 - Git and [Git LFS](https://git-lfs.com) (`git lfs version`).
 - For the default sandbox: hardware virtualization exposed as `/dev/kvm`
   (`ls -l /dev/kvm`). Bare metal, or a VM with nested virtualization.
-  Without it (for example Docker Desktop on Windows), use the no-KVM mode in
-  step 5.
+  On Windows 11, WSL2 can provide it: see [Windows (WSL2)](#windows-wsl2).
+  Without it, use the no-KVM mode in step 5.
 - About 7 GB of disk for the archives plus the loaded images.
+
+## Windows (WSL2)
+
+Windows itself has no `/dev/kvm`; it only exists on Linux. WSL2 runs a real
+Linux kernel, and on Windows 11 it can pass hardware virtualization through
+to that kernel (nested virtualization), which creates `/dev/kvm`. The sandbox
+then starts its microVM inside WSL2.
+
+> These steps follow Microsoft's and Docker's documented setup but were not
+> tested on Windows hardware for this repo. The `/dev/kvm` checks below tell
+> you at each stage whether it worked.
+
+### What you need
+
+| What | Size / cost | Notes |
+|---|---|---|
+| Windows 11 | — | WSL2 nested virtualization is Windows 11 only. On Windows 10, use a [Hyper-V VM](#alternative-a-hyper-v-linux-vm) or no-KVM mode. |
+| CPU virtualization on in BIOS/UEFI | — | Intel VT-x or AMD-V/SVM. Task Manager → Performance → CPU must say "Virtualization: Enabled". |
+| WSL2 + Ubuntu | ~1–2 GB | `wsl --install` downloads both. |
+| Docker Engine inside Ubuntu | ~500 MB | Not Docker Desktop: see step W4. |
+| `git`, `git-lfs`, `openssl`, `curl` in Ubuntu | small | `apt` packages. |
+| This repo's archives | ~2.2 GB | Skip the 359 MB `sandbox-runner-direct` file; KVM mode does not use it. |
+| `code-interpreter` repo at `v1.10.4` | small | Compose files and configuration. |
+| `redis:7-alpine`, `cgr.dev/chainguard/minio` | ~150 MB | Pulled automatically on first start. |
+| RAM | 8 GB+ recommended | The sandbox microVM is configured with 2 GB and 2 vCPUs (`LAUNCHER_RAM_MIB`, `LAUNCHER_VCPUS` in `docker-compose.yaml`), on top of the other services. WSL2 gets half of your RAM by default. |
+
+KVM mode does **not** need `build-packages.sh`: Python, Node and Bun are
+already inside the `code-interpreter-sandbox-runner` image.
+
+### W1. Install WSL2 and Ubuntu (PowerShell as administrator)
+
+```powershell
+wsl --install -d Ubuntu
+wsl --update
+wsl --version
+```
+
+Restart Windows if asked, then open Ubuntu once to create your Linux user.
+
+### W2. Turn on nested virtualization
+
+Create or edit `C:\Users\<you>\.wslconfig`:
+
+```ini
+[wsl2]
+nestedVirtualization=true
+# Optional: give WSL more memory than the default half of your RAM.
+# memory=12GB
+```
+
+Then restart WSL from PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+### W3. Check for `/dev/kvm` (Ubuntu terminal)
+
+```bash
+ls -l /dev/kvm
+```
+
+If it says "No such file", load the module for your CPU and check again:
+
+```bash
+sudo modprobe kvm_intel   # Intel
+sudo modprobe kvm_amd     # AMD
+```
+
+Still missing means virtualization is not reaching WSL: recheck the BIOS
+setting, that you are on Windows 11, and that `wsl --update` ran. Then use an
+[alternative](#alternatives) instead.
+
+Give your user access to it:
+
+```bash
+sudo usermod -aG kvm $USER
+```
+
+### W4. Install Docker Engine inside Ubuntu
+
+Docker Desktop runs containers in its own hidden VM, which does not reliably
+pass `/dev/kvm` through to containers. Docker Engine installed directly in
+Ubuntu uses the same kernel you just checked.
+
+If Docker Desktop is installed, quit it (tray icon), or open its Settings →
+Resources → WSL integration and turn integration off for Ubuntu, so the
+`docker` command in Ubuntu is not taken over. Then, in Ubuntu:
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+sudo apt-get install -y git git-lfs openssl curl
+```
+
+Close and reopen the Ubuntu terminal (for the new groups), start Docker if
+it is not running (`sudo service docker start`), and confirm containers can
+use KVM:
+
+```bash
+docker compose version          # needs 2.24.4 or later
+docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
+```
+
+The last command must print the device. If it does, continue with step 1
+below **inside Ubuntu**, from your home folder:
+
+```bash
+cd ~
+```
+
+Keep the repos under `~/`, not `/mnt/c/...`: the Windows drive is slow from
+WSL and breaks Linux file permissions, and cloning with Git for Windows can
+convert the `.sh` scripts to CRLF line endings. In step 1, use the
+`--exclude "*sandbox-runner-direct*"` variant to skip the file KVM mode does
+not need, and the matching commands in step 2. In step 5 use the "With
+`/dev/kvm`" commands. From Windows, the API is reachable at
+`http://localhost:3112`.
+
+### Alternatives
+
+#### Alternative A: Hyper-V Linux VM
+
+Works on Windows 10/11 Pro, Enterprise or Education (Intel CPUs on Windows
+10; AMD needs Windows 11). Create an Ubuntu VM in Hyper-V Manager, shut it
+down, enable nested virtualization from an administrator PowerShell, then
+start it and follow this README inside the VM as on any Linux host:
+
+```powershell
+Set-VMProcessor -VMName <vm-name> -ExposeVirtualizationExtensions $true
+```
+
+#### Alternative B: no-KVM mode
+
+If neither works, use the no-KVM mode in step 5. It runs on Docker Desktop
+but with weaker isolation, for testing only.
 
 ## 1. Download the archives
 
@@ -66,6 +202,16 @@ docker images 'ghcr.io/librechat-ai/*'
 ```
 
 Each load prints `Loaded image: ghcr.io/librechat-ai/<name>:sha-a62d69e…`.
+
+If you skipped the direct runner with `--exclude` in step 1, its file is
+still there as a small LFS pointer, so leave it out of both commands:
+
+```bash
+grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c
+for f in *.tar.gz; do
+  [ "$f" = code-interpreter-sandbox-runner-direct.tar.gz ] || docker load -i "$f"
+done
+```
 
 ## 3. Get the matching Compose configuration
 
