@@ -1,0 +1,41 @@
+# Server override: publish every port on 127.0.0.1 only.
+#
+# Upstream's docker-compose.yaml publishes all services on every interface,
+# including the sandbox runner (port 2000, which would let anyone skip the
+# API), Redis (password "localdev") and MinIO (minioadmin/minioadmin).
+# Docker-published ports also bypass host firewalls such as firewalld, so a
+# firewall rule does not hide them. Listed in COMPOSE_FILE for both paths in
+# README.md.
+#
+# CODEAPI_API_BIND=0.0.0.0 would publish the API on all interfaces. Only do
+# that after turning on authentication (LOCAL_MODE=false); with the defaults
+# anyone who can reach port 3112 can run code on this machine.
+#
+# Needs Docker Compose 2.24.4 or later for `!override`.
+
+services:
+  api:
+    ports: !override
+      - ${CODEAPI_API_BIND:-127.0.0.1}:3112:3112
+    # A unique name for a LibreChat container joined to this project's
+    # network; LibreChat's own service is also called "api".
+    networks:
+      default:
+        aliases:
+          - code-interpreter-api
+  egress_gateway:
+    ports: !override
+      - 127.0.0.1:3190:3190
+  sandbox-runner:
+    ports: !override
+      - 127.0.0.1:2000:2000
+  file_server:
+    ports: !override
+      - 127.0.0.1:${CODEAPI_FILE_SERVER_PORT:-13000}:3000
+  redis:
+    ports: !override
+      - 127.0.0.1:${CODEAPI_REDIS_PORT:-16379}:6379
+  minio:
+    ports: !override
+      - 127.0.0.1:${CODEAPI_MINIO_PORT:-19000}:9000
+      - 127.0.0.1:${CODEAPI_MINIO_CONSOLE_PORT:-19001}:9001
