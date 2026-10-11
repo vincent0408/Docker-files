@@ -218,6 +218,24 @@ In `~/Docker-files/code-interpreter/v1.10.4`:
    `code-interpreter-api`, `-worker`, `-file-server`, `-egress-gateway`,
    `-tool-call-server` and `-sandbox-runner`. Having `-sandbox-runner-direct`
    too is fine.
+5. **Build the patched KVM runner.** The published KVM runner cannot run any
+   code as shipped (every run fails with `sandbox_execution_failed`; see
+   [KVM-RUNNER-PATCH.md](KVM-RUNNER-PATCH.md)). Tell the user this needs
+   internet access, a few minutes and about 9 GB of free disk while it builds
+   (check `df -h ~`), then:
+
+   ```bash
+   curl -fsSL "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/Dockerfile.runner-pipe-addon-fix" \
+     | docker build -t local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix -
+   docker images local/code-interpreter-sandbox-runner
+   ```
+
+   Success: the build ends without error (it fails on purpose if the addon or
+   the symlink is missing or `e2fsck` complains) and the image is listed. If
+   `docker images` already lists
+   `code-interpreter-sandbox-runner:pipe-addon-fix` (an earlier build under
+   another name), `docker tag` it to `local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix` instead of rebuilding. **ASK**
+   before running `docker builder prune -f` to free the build cache.
 
 ## Phase 5: Configure and start
 
@@ -228,20 +246,23 @@ stay). Then switch `.env` to KVM mode:
 ```bash
 cd ~/code-interpreter
 cp .env .env.before-kvm
-sed -i 's#:docker-compose.direct.yml##' .env
+curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.kvm-fix.yml"
+sed -i 's#:docker-compose.direct.yml#:docker-compose.kvm-fix.yml#' .env
 grep ^COMPOSE_FILE .env
 ```
 
 `COMPOSE_FILE` must now be
-`docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml`.
+`docker-compose.yaml:docker-compose.images.yml:docker-compose.kvm-fix.yml:docker-compose.server.yml`.
 
 **From scratch:**
 
 ```bash
 cd ~
 [ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
-cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,server}.yml code-interpreter/
 cd code-interpreter
+for f in images kvm-fix server; do
+  curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.$f.yml"
+done
 [ -f .env ] && cp .env .env.backup
 cp .env.example .env
 sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
@@ -249,7 +270,8 @@ cat >> .env <<'EOF'
 
 # --- Path B: KVM ---
 COMPOSE_PROJECT_NAME=code-interpreter
-COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
+COMPOSE_PATH_SEPARATOR=:
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.kvm-fix.yml:docker-compose.server.yml
 EOF
 ```
 
@@ -262,8 +284,11 @@ Verify the configuration before starting:
 docker compose config sandbox-runner | grep -E 'image:|/dev/kvm|KVM_ENABLED'
 ```
 
-It must show the `code-interpreter-sandbox-runner` image (not `-direct`),
-`/dev/kvm` and `KVM_ENABLED: "true"`.
+It must show the `local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix` image (not
+the `ghcr.io` runner, not `-direct`), `/dev/kvm` and `KVM_ENABLED: "true"`.
+Also run `docker compose config --images`: anything other than
+`ghcr.io/librechat-ai/…`, `local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix`, Redis and MinIO means Compose would build
+an image, so stop and show the user.
 
 Start and wait (first start can take a minute or two):
 
@@ -296,8 +321,10 @@ for `hello.txt`. Download it with the response's `session_id` and file `id`:
 curl -s "localhost:3112/v1/download/<session_id>/<file id>?kind=user"   # prints: hi
 ```
 
-If `code` is `255`, show `docker compose logs --tail 80 sandbox-runner` and
-stop. If `curl` to `localhost` is refused from Ubuntu while `docker compose ps`
+If `code` is `255`, or the reply is `"error":"sandbox_execution_failed"`, show
+`docker compose logs --tail 80 sandbox-runner` and stop. A log line
+`Cannot find module '/sandbox_api/.build/anonymous-pipes.node'` means the
+unpatched runner is running: recheck Phase 4 step 5 and `COMPOSE_FILE`. If `curl` to `localhost` is refused from Ubuntu while `docker compose ps`
 shows `api` up, see README "Troubleshooting".
 
 ## Phase 6: Connect LibreChat
@@ -311,7 +338,13 @@ show the exact lines first.
 | In Docker (same Docker as the code interpreter) | `LIBRECHAT_CODE_BASEURL=http://code-interpreter-api:3112/v1` and `LIBRECHAT_CODE_API_KEY=local-no-auth` |
 
 If either variable already exists in LibreChat's `.env`, replace it rather than
-adding a duplicate, and tell the user the old value was replaced.
+adding a duplicate, and tell the user the old value was replaced. The URL must
+end in `/v1`. If LibreChat's `.env` has any `CODEAPI_AUTH_PROVIDER`,
+`CODEAPI_JWT_ENABLED` or other `CODEAPI_JWT_*` line, show them to the user and
+**ASK** to comment them out: they turn on JWT signing, and without a key every
+run fails with "Code execution is not authorized". A LibreChat container only
+reads `.env` when created, so restart it with
+`docker compose up -d --force-recreate api`, not `restart`.
 
 For **LibreChat in Docker**, it also needs to join the code interpreter's
 network. In the LibreChat folder, `docker-compose.override.yml` needs:
@@ -357,9 +390,11 @@ LibreChat and try it.
      `docker compose down`, logs `docker compose logs -f sandbox-runner service-worker`;
    - after a reboot or Docker Desktop restart, run `docker compose up -d`
      again;
-   - how to go back to no-KVM mode if Path A was set up before: add
-     `docker-compose.direct.yml` back after `docker-compose.images.yml` in
-     `COMPOSE_FILE` (or restore `.env.before-kvm`) and `docker compose up -d`.
+   - how to go back to no-KVM mode if Path A was set up before: replace
+     `docker-compose.kvm-fix.yml` with `docker-compose.direct.yml` in
+     `COMPOSE_FILE` (or restore `.env.before-kvm`) and `docker compose up -d`;
+   - that the runner patch can be dropped once upstream fixes the KVM guest
+     (KVM-RUNNER-PATCH.md, "Removing it").
 3. Security reminder: the API runs with `LOCAL_MODE=true` (no authentication)
    and is only reachable on `127.0.0.1`; it must not be exposed to other
    machines.
