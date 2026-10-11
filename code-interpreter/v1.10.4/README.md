@@ -41,8 +41,8 @@ differ in how the sandbox isolates code.
 | Tested | Same files and settings run end to end on Linux; Windows-side settings not tested on Windows hardware | Not tested (no `/dev/kvm` on the test machine) |
 
 Either way you need: Git, Git LFS, `openssl` and `curl` in Ubuntu; Docker
-Compose 2.24.4 or later (`docker compose version`); about 7 GB of disk; 8 GB+
-of RAM for WSL2.
+Compose 2.24.4 or later (`docker compose version`); about 7 GB of disk; and
+enough memory for WSL2 (see [Memory](#memory)).
 
 Work in your Ubuntu home folder (`~/`) for both paths, never under `/mnt/c`:
 the Windows drive is slow from WSL, and cloning with Git for Windows can turn
@@ -56,16 +56,16 @@ the `.sh` scripts' line endings into CRLF, which breaks them.
 
 | Where | Setting | Why |
 |---|---|---|
-| `C:\Users\<you>\.wslconfig` | `[wsl2]` then `memory=8GB` (more if you have it) | The stack plus the package build need a few GB; WSL2 defaults to half your RAM. Skip if that is already 8 GB or more. `nestedVirtualization` is **not** needed. |
+| `C:\Users\<you>\.wslconfig` | Usually nothing | WSL2 already gets half your RAM by default; see [Memory](#memory). `nestedVirtualization` is **not** needed. |
 | Docker Desktop → Settings → General | "Use the WSL 2 based engine": on | Runs containers in WSL2. |
 | Docker Desktop → Settings → Resources → WSL integration | On for your Ubuntu distro | Makes `docker` work inside Ubuntu. |
 | Docker Desktop → Settings → General | "Start Docker Desktop when you sign in" (optional) | Docker must be running before the stack starts. |
 | `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN=<openssl rand -hex 32>` | Required by the API. |
 | `code-interpreter/.env` | `COMPOSE_PROJECT_NAME=code-interpreter` | Fixes the network name LibreChat joins (`code-interpreter_default`). |
 | `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml` | Plain `docker compose up -d`, `ps`, `logs` and `down` then use all four files. |
-| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | See [A6](#a6-point-librechat-at-it). |
+| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` and `LIBRECHAT_CODE_API_KEY=…` | See [A6](#a6-point-librechat-at-it). |
 
-After changing `.wslconfig`, run `wsl --shutdown` in PowerShell and restart
+If you change `.wslconfig`, run `wsl --shutdown` in PowerShell and restart
 Docker Desktop.
 
 ### A1. Prepare Ubuntu
@@ -147,9 +147,11 @@ LibreChat's `.env`:
 
 ```bash
 LIBRECHAT_CODE_BASEURL=http://localhost:3112/v1
+LIBRECHAT_CODE_API_KEY=local-no-auth
 ```
 
-Docker Desktop forwards the `127.0.0.1` ports to Windows' `localhost`.
+Docker Desktop forwards the `127.0.0.1` ports to Windows' `localhost`. About
+the API key, see [LibreChat settings](#librechat-settings).
 
 **LibreChat running in Docker Desktop**: join it to the code interpreter's
 network, as in [LibreChat in Docker](#librechat-in-docker).
@@ -181,11 +183,11 @@ B3 tell you whether your machine can do it before you change anything else.
 | Where | Setting | Why |
 |---|---|---|
 | BIOS/UEFI | Intel VT-x or AMD-V/SVM on | Task Manager → Performance → CPU must say "Virtualization: Enabled". |
-| `C:\Users\<you>\.wslconfig` | `[wsl2]`, `nestedVirtualization=true`, and `memory=8GB` or more | Creates `/dev/kvm` in WSL2. The sandbox microVM is configured with 2 GB and 2 vCPUs (`LAUNCHER_RAM_MIB`, `LAUNCHER_VCPUS` in `docker-compose.yaml`) on top of the other services. |
+| `C:\Users\<you>\.wslconfig` | `[wsl2]` and `nestedVirtualization=true` | Creates `/dev/kvm` in WSL2. Memory usually needs no setting; see [Memory](#memory). |
 | Docker Desktop | Same settings as Path A (WSL 2 based engine, WSL integration on for Ubuntu) | Only if B3 shows Docker Desktop can't pass `/dev/kvm`, use the [Docker Engine fallback](#b4-fallback-docker-engine-inside-ubuntu). |
 | `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN`, `COMPOSE_PROJECT_NAME=code-interpreter` | As in Path A. |
 | `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml` | Same as Path A **without** `docker-compose.direct.yml`. |
-| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | Same as Path A ([A6](#a6-point-librechat-at-it)). |
+| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` and `LIBRECHAT_CODE_API_KEY=…` | Same as Path A ([A6](#a6-point-librechat-at-it)). |
 
 ### B1. Check Windows and WSL (PowerShell)
 
@@ -207,7 +209,6 @@ Create or edit `C:\Users\<you>\.wslconfig` (add the lines under an existing
 ```ini
 [wsl2]
 nestedVirtualization=true
-memory=8GB
 ```
 
 Then quit Docker Desktop (tray icon → Quit), run `wsl --shutdown` in
@@ -401,6 +402,7 @@ and in LibreChat's `.env`:
 
 ```bash
 LIBRECHAT_CODE_BASEURL=http://code-interpreter-api:3112/v1
+LIBRECHAT_CODE_API_KEY=local-no-auth
 ```
 
 Use `code-interpreter-api`, not `api`: on the shared network `api` matches
@@ -408,6 +410,60 @@ both LibreChat's and the code interpreter's container. Start the code
 interpreter first (the network must exist), then `docker compose up -d` in
 LibreChat, and enable the code interpreter on an agent. Both must run on the
 same Docker engine.
+
+### LibreChat settings
+
+LibreChat reads two settings for the code interpreter
+([LibreChat docs](https://www.librechat.ai/docs/features/code_interpreter),
+[environment variables](https://www.librechat.ai/docs/configuration/dotenv)):
+
+- `LIBRECHAT_CODE_BASEURL`: where the API is, ending in `/v1`.
+- `LIBRECHAT_CODE_API_KEY`: sent as an `x-api-key` header. Set globally in
+  `.env`, it applies to all users; without it, each user may be asked for a
+  key. With this stack's default `LOCAL_MODE=true` the API accepts every
+  request and ignores the key, so any placeholder such as `local-no-auth`
+  works. (A real key or LibreChat's JWT setup only matters once you turn
+  `LOCAL_MODE` off.)
+
+After editing LibreChat's `.env`, restart LibreChat
+(`docker compose down && docker compose up -d` for the Docker setup).
+
+### Memory
+
+Measured on this stack: every service except the sandbox runner together uses
+about 235 MiB (`docker stats` after a few runs). The sandbox runner adds:
+
+| Path | Sandbox runner | Total, roughly |
+|---|---|---|
+| A (no-KVM) | ~60 MiB plus what running code uses | well under 1 GB |
+| B (KVM) | One long-lived microVM, configured for 2 GiB (`LAUNCHER_RAM_MIB=2048` in `docker-compose.yaml`), shared by all runs | ~2.3 GB at full use |
+
+On top of that come Docker Desktop itself and, if LibreChat runs in Docker
+too, its own containers (MongoDB, Meilisearch and so on). The full
+`build-packages.sh` (Path A) compiles Python and installs many packages, which
+also takes memory while it runs.
+
+WSL2 gets half of your computer's RAM by default, so on a 16 GB PC it already
+has 8 GB and you don't need a `memory` line. Only if WSL2 runs out (containers
+killed, `docker compose ps` showing restarts) add one to `.wslconfig`, for
+example on a 16 GB PC:
+
+```ini
+[wsl2]
+memory=10GB
+```
+
+and leave Windows at least 4–6 GB. Then `wsl --shutdown` and restart Docker
+Desktop.
+
+### Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| `sandbox-runner` never becomes healthy, or runs return `"code":255` | `docker compose logs --tail 50 sandbox-runner` |
+| `curl localhost:3112/…` from Ubuntu says "Connection refused" though `docker compose ps` shows `api` up | A 2023 WSL pre-release bug refused connections to `127.0.0.1`-published ports ([docker/for-win#13182](https://github.com/docker/for-win/issues/13182), closed). Run `wsl --update`, and try the same request from PowerShell with `curl.exe` to see whether only WSL is affected. |
+| LibreChat cannot reach `code-interpreter-api` | Start the code interpreter first; check `docker network inspect code-interpreter_default` lists LibreChat's container. |
+| Containers restart or get killed under load | See [Memory](#memory). |
 
 ### Security
 
