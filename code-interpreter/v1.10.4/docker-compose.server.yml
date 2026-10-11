@@ -20,6 +20,12 @@ services:
   api:
     ports: !override
       - ${CODEAPI_API_BIND:-127.0.0.1}:3112:3112
+    # A unique name for a LibreChat container joined to this project's
+    # network; LibreChat's own service is also called "api".
+    networks:
+      default:
+        aliases:
+          - code-interpreter-api
   egress_gateway:
     ports: !override
       - 127.0.0.1:3190:3190

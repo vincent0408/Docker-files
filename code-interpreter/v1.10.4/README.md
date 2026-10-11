@@ -30,7 +30,8 @@ seven services plus Redis and MinIO (S3 storage). LibreChat sends code to the
 - For the default sandbox: hardware virtualization exposed as `/dev/kvm`
   (`ls -l /dev/kvm`). Bare metal, or a VM with nested virtualization.
   On Windows 11, WSL2 can provide it: see [Windows (WSL2)](#windows-wsl2).
-  Without it, use the no-KVM mode in step 5.
+  Without it, use the no-KVM mode in step 5, or on Windows
+  [Windows (WSL2) without KVM](#windows-wsl2-without-kvm-testing).
 - Running it on a server for a LibreChat elsewhere: see
   [RHEL server + LibreChat on your own computer](#rhel-server--librechat-on-your-own-computer).
 - About 7 GB of disk for the archives plus the loaded images.
@@ -168,8 +169,157 @@ Set-VMProcessor -VMName <vm-name> -ExposeVirtualizationExtensions $true
 
 #### Alternative B: no-KVM mode
 
-If neither works, use the no-KVM mode in step 5. It runs on Docker Desktop
-but with weaker isolation, for testing only.
+If neither works, use [no-KVM mode on Windows](#windows-wsl2-without-kvm-testing).
+It runs on Docker Desktop but with weaker isolation, for testing only.
+
+## Windows (WSL2) without KVM (testing)
+
+The quickest way to try the code interpreter on Windows: Docker Desktop with
+its WSL2 backend, no `/dev/kvm` needed. Sandboxed code shares the kernel of
+Docker Desktop's Linux VM and has no per-run memory or process limits, so use
+it only for your own code.
+
+> Tested on Linux with the same files and settings (stack start, code
+> execution, a LibreChat-style container on the shared network). The
+> Windows-side settings (Docker Desktop, `.wslconfig`, Windows `localhost`)
+> were not tested on Windows hardware.
+
+### Settings to make
+
+| Where | Setting | Why |
+|---|---|---|
+| `C:\Users\<you>\.wslconfig` | `[wsl2]` then `memory=8GB` (more if you have it) | The stack plus the package build need a few GB; WSL2 defaults to half your RAM. Not needed if that is already 8 GB or more. `nestedVirtualization` is **not** needed. |
+| Docker Desktop → Settings → General | "Use the WSL 2 based engine": on | Runs containers in WSL2. |
+| Docker Desktop → Settings → Resources → WSL integration | On for your Ubuntu distro | Makes `docker` work inside Ubuntu. |
+| Docker Desktop → Settings → General | "Start Docker Desktop when you sign in" (optional) | Docker must be running before the stack starts. |
+| `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN=<openssl rand -hex 32>` | Required by the API. |
+| `code-interpreter/.env` | `COMPOSE_PROJECT_NAME=code-interpreter` | Fixes the network name LibreChat joins (`code-interpreter_default`). |
+| `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml` | Plain `docker compose up -d`, `ps`, `logs` and `down` then use all four files. |
+| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | See [N6](#n6-point-librechat-at-it). |
+
+After changing `.wslconfig`, run `wsl --shutdown` in PowerShell and restart
+Docker Desktop.
+
+### N1. Prepare Ubuntu (Ubuntu terminal)
+
+If you don't have WSL2 and Ubuntu yet: `wsl --install -d Ubuntu` in an
+administrator PowerShell. Then in Ubuntu:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git git-lfs openssl curl
+docker compose version     # needs 2.24.4 or later; comes with Docker Desktop
+cd ~                       # work in your Linux home, not /mnt/c
+```
+
+Keep everything under `~/`: `/mnt/c` is slow from WSL, and Git for Windows
+can turn the `.sh` scripts' line endings into CRLF, which breaks them.
+
+### N2. Download and load the images
+
+No-KVM mode does not use the 1.35 GB KVM runner image, so skip it:
+
+```bash
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
+cd Docker-files && git lfs pull --exclude "*sandbox-runner.tar.gz"
+cd code-interpreter/v1.10.4
+grep -v ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
+for f in *.tar.gz; do
+  [ "$f" = code-interpreter-sandbox-runner.tar.gz ] || docker load -i "$f"
+done
+cd ~
+```
+
+### N3. Get the Compose files and set `.env`
+
+```bash
+git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,direct,server}.yml code-interpreter/
+cd code-interpreter
+cp .env.example .env
+sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
+cat >> .env <<'EOF'
+
+# --- Windows / WSL2, no-KVM mode ---
+COMPOSE_PROJECT_NAME=code-interpreter
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml
+EOF
+```
+
+The four Compose files: upstream's base file; `images` (use the loaded
+images); `direct` (no-KVM runner, explained in
+[step 5](#without-devkvm-no-kvm-mode-for-testing)); `server` (every port on
+`127.0.0.1` only, so the sandbox runner, Redis and MinIO are not reachable
+from your network, and the API answers to `code-interpreter-api` for
+LibreChat).
+
+### N4. Build the language runtimes
+
+```bash
+SKIP_PYTHON_PACKAGES=1 SKIP_JS_PACKAGES=1 SKIP_NODE=1 SKIP_BUN=1 ./build-packages.sh
+```
+
+This builds Python and bash only, for a first test. Later, run
+`./build-packages.sh` without the `SKIP_` variables for Python's
+data-science packages, Node and Bun (much slower), then
+`docker compose restart sandbox-runner`.
+
+### N5. Start and check
+
+```bash
+docker compose up -d
+docker compose ps              # sandbox-runner "(healthy)", all services Up
+curl -s localhost:3112/v1/exec -H 'Content-Type: application/json' \
+  -d '{"lang":"py","code":"print(6*7)"}'
+```
+
+The last command should return `"stdout":"42\n"` and `"code":0`. If `code`
+is `255`, see `docker compose logs sandbox-runner`.
+
+### N6. Point LibreChat at it
+
+**LibreChat running directly on Windows or in WSL** (`npm run backend`): in
+LibreChat's `.env`:
+
+```bash
+LIBRECHAT_CODE_BASEURL=http://localhost:3112/v1
+```
+
+Docker Desktop forwards the `127.0.0.1` ports to Windows' `localhost`.
+
+**LibreChat running in Docker** (its `docker compose`): join it to the code
+interpreter's network. Create `docker-compose.override.yml` in the LibreChat
+folder (or add to the one you have):
+
+```yaml
+services:
+  api:
+    networks:
+      - default
+      - code-interpreter
+
+networks:
+  code-interpreter:
+    name: code-interpreter_default
+    external: true
+```
+
+and in LibreChat's `.env`:
+
+```bash
+LIBRECHAT_CODE_BASEURL=http://code-interpreter-api:3112/v1
+```
+
+Use `code-interpreter-api`, not `api`: on the shared network `api` matches
+both LibreChat's and the code interpreter's container. Start the code
+interpreter first (the network must exist), then
+`docker compose up -d` in LibreChat, and enable the code interpreter on an
+agent.
+
+### Day-to-day
+
+From `~/code-interpreter`: `docker compose up -d` to start,
+`docker compose down` to stop (`down -v` also deletes stored files),
+`docker compose logs -f sandbox-runner service-worker` when a run fails.
 
 ## RHEL server + LibreChat on your own computer
 
@@ -446,10 +596,8 @@ Use this on Docker Desktop for Windows or Mac, or any host without `/dev/kvm`.
 Sandboxed code shares the host kernel, so it is weaker isolation: use it only
 on your own machine, never for code from people you don't trust.
 
-On Windows, run every command in a WSL2 Ubuntu terminal (with Docker
-Desktop's WSL integration turned on for that distro), and clone both repos
-into your Ubuntu home folder (`~/`), not under `/mnt/c`. Cloning with Git for
-Windows can turn the `.sh` scripts' line endings into CRLF, which breaks them.
+On Windows, follow [Windows (WSL2) without KVM](#windows-wsl2-without-kvm-testing)
+instead: it is this mode with every setting spelled out.
 
 1. Copy the no-KVM override next to the other one:
 
