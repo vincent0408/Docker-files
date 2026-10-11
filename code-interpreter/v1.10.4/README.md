@@ -39,6 +39,7 @@ differ in how the sandbox isolates code.
 | Language runtimes | Built once with `build-packages.sh` | Already in the image |
 | Compose files | `images`, `direct`, `server` | `images`, `server` |
 | Tested | Same files and settings run end to end on Linux; Windows-side settings not tested on Windows hardware | Not tested (no `/dev/kvm` on the test machine) |
+| Commands | bash (Ubuntu terminal) or PowerShell; see [Bash or PowerShell](#bash-or-powershell) | Same |
 
 Either way you need: Git, Git LFS, `openssl` and `curl` in Ubuntu; Docker
 Compose 2.24.4 or later (`docker compose version`); about 7 GB of disk; and
@@ -47,6 +48,39 @@ enough memory for WSL2 (see [Memory](#memory)).
 Work in your Ubuntu home folder (`~/`) for both paths, never under `/mnt/c`:
 the Windows drive is slow from WSL, and cloning with Git for Windows can turn
 the `.sh` scripts' line endings into CRLF, which breaks them.
+
+### Bash or PowerShell
+
+Every command block below comes in two versions. The **bash** one runs in the
+Ubuntu terminal. The **PowerShell** one runs in Windows PowerShell and does the
+same thing: Windows-side steps run directly, and steps that work on files in
+your Ubuntu home folder are handed to Ubuntu with `wsl`, so the files still
+live in `~/` with Linux line endings. You can switch shells between steps.
+
+The PowerShell versions assume your distro is called `Ubuntu`. Check with
+`wsl -l -v`; if it is named differently (for example `Ubuntu-24.04`), change
+`Ubuntu` in the helpers below and in the commands.
+
+Paste these two helpers into each new PowerShell window before you start (or
+add them to your profile once with `notepad $PROFILE`):
+
+```powershell
+# ub: run a bash script in your Ubuntu home folder
+function ub([string]$Script) {
+  $f = Join-Path $env:TEMP 'ub.sh'
+  [IO.File]::WriteAllText($f, ($Script -replace "`r", ''))
+  $p = '/mnt/' + $f.Substring(0, 1).ToLower() + ($f.Substring(2) -replace '\\', '/')
+  wsl -d Ubuntu --cd ~ -- bash $p
+}
+# dc: docker compose in ~/code-interpreter
+function dc { wsl -d Ubuntu --cd ~ -- cd code-interpreter '&&' docker compose @args }
+```
+
+`ub` saves the script to a temporary file with Linux line endings and runs it
+with bash, so `sudo` can still ask for your password. Keep the `@'` … `'@`
+quotes in the examples as they are: they stop PowerShell from changing `$` and
+quotes inside the script, and the closing `'@` must start its line. `dc up -d`
+is the same as `docker compose up -d` in the Ubuntu terminal.
 
 ---
 
@@ -79,6 +113,14 @@ docker compose version     # needs 2.24.4 or later; comes with Docker Desktop
 cd ~
 ```
 
+PowerShell:
+
+```powershell
+wsl -d Ubuntu -u root -- apt-get update
+wsl -d Ubuntu -u root -- apt-get install -y git git-lfs openssl curl
+wsl -d Ubuntu -- docker compose version   # needs 2.24.4 or later
+```
+
 ### A2. Download and load the images
 
 Path A does not use the 1.35 GB KVM runner image, so skip it:
@@ -92,6 +134,20 @@ for f in *.tar.gz; do
   [ "$f" = code-interpreter-sandbox-runner.tar.gz ] || docker load -i "$f"
 done
 cd ~
+```
+
+PowerShell:
+
+```powershell
+ub @'
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
+cd Docker-files && git lfs pull --exclude "*sandbox-runner.tar.gz"
+cd code-interpreter/v1.10.4
+grep -v ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
+for f in *.tar.gz; do
+  [ "$f" = code-interpreter-sandbox-runner.tar.gz ] || docker load -i "$f"
+done
+'@
 ```
 
 The skipped file stays behind as a small LFS pointer, which is why both
@@ -114,6 +170,24 @@ COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct
 EOF
 ```
 
+PowerShell:
+
+```powershell
+ub @'
+git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,direct,server}.yml code-interpreter/
+cd code-interpreter
+cp .env.example .env
+sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
+cat >> .env <<'EOF'
+
+# --- Path A: no-KVM ---
+COMPOSE_PROJECT_NAME=code-interpreter
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml
+EOF
+'@
+```
+
 What each file does: [Compose files](#compose-files).
 
 ### A4. Build the language runtimes
@@ -126,9 +200,17 @@ needs only Docker and internet. For a first test, Python and bash only:
 SKIP_PYTHON_PACKAGES=1 SKIP_JS_PACKAGES=1 SKIP_NODE=1 SKIP_BUN=1 ./build-packages.sh
 ```
 
+PowerShell:
+
+```powershell
+ub 'cd ~/code-interpreter && SKIP_PYTHON_PACKAGES=1 SKIP_JS_PACKAGES=1 SKIP_NODE=1 SKIP_BUN=1 ./build-packages.sh'
+```
+
 Later, run `./build-packages.sh` without the `SKIP_` variables for Python's
 data-science packages, Node and Bun (much slower), then
-`docker compose restart sandbox-runner`. The sandbox only offers the
+`docker compose restart sandbox-runner` (PowerShell:
+`ub 'cd ~/code-interpreter && ./build-packages.sh'`, then
+`dc restart sandbox-runner`). The sandbox only offers the
 languages it finds in `./data/pkgs` when it starts.
 
 ### A5. Start and check
@@ -136,6 +218,13 @@ languages it finds in `./data/pkgs` when it starts.
 ```bash
 docker compose up -d
 docker compose ps              # sandbox-runner "(healthy)", all services Up
+```
+
+PowerShell:
+
+```powershell
+dc up -d
+dc ps                          # sandbox-runner "(healthy)", all services Up
 ```
 
 Then run the [checks](#check-it-works).
@@ -218,12 +307,35 @@ nestedVirtualization=true
 Then quit Docker Desktop (tray icon → Quit), run `wsl --shutdown` in
 PowerShell, and start Docker Desktop again.
 
+PowerShell, for the whole step (Notepad offers to create the file if it does
+not exist; save it as `.wslconfig`, not `.wslconfig.txt`):
+
+```powershell
+notepad "$env:USERPROFILE\.wslconfig"      # add the two lines above, save, close
+# quit Docker Desktop from the tray icon first, then:
+wsl --shutdown
+Start-Process "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
+Get-Content "$env:USERPROFILE\.wslconfig"  # must show [wsl2] and nestedVirtualization=true
+```
+
 ### B3. Check for KVM (Ubuntu terminal)
 
 ```bash
 ls -l /dev/kvm
 docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
 ```
+
+PowerShell:
+
+```powershell
+wsl -d Ubuntu -- ls -l /dev/kvm
+wsl -d Ubuntu -- docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
+```
+
+If the `docker run` line says `Cannot connect to the Docker daemon`, Docker is
+not reachable from Ubuntu: start Docker Desktop and check its WSL integration
+is on for your distro (see [Path A settings](#settings-to-make)), then run it
+again. That error says nothing about KVM yet.
 
 | `ls -l /dev/kvm` | `docker run …` | Meaning | Next |
 |---|---|---|---|
@@ -236,6 +348,13 @@ If `/dev/kvm` is missing, load the module for your CPU and check again:
 ```bash
 sudo modprobe kvm_intel   # Intel
 sudo modprobe kvm_amd     # AMD
+```
+
+PowerShell:
+
+```powershell
+wsl -d Ubuntu -u root -- modprobe kvm_intel   # Intel
+wsl -d Ubuntu -u root -- modprobe kvm_amd     # AMD
 ```
 
 Still missing means virtualization is not reaching WSL: recheck the BIOS
@@ -265,6 +384,17 @@ docker compose version          # needs 2.24.4 or later
 docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
 ```
 
+PowerShell, for the whole step (`wsl --terminate` restarts Ubuntu so the new
+groups apply):
+
+```powershell
+ub 'curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker,kvm $USER'
+wsl --terminate Ubuntu
+wsl -d Ubuntu -u root -- service docker start
+wsl -d Ubuntu -- docker compose version    # needs 2.24.4 or later
+wsl -d Ubuntu -- docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
+```
+
 The `docker run` line must print the device. If it does not, stay on Path A.
 
 Docker Engine has its own image store and networks, separate from Docker
@@ -286,6 +416,21 @@ docker load -i code-interpreter-sandbox-runner.tar.gz
 cd ~/code-interpreter
 sed -i 's#:docker-compose.direct.yml##' .env
 grep ^COMPOSE_FILE .env    # must not list docker-compose.direct.yml
+```
+
+PowerShell:
+
+```powershell
+ub @'
+cd ~/code-interpreter && docker compose down     # stop Path A
+cd ~/Docker-files && git pull && git lfs pull --include "*sandbox-runner.tar.gz"
+cd code-interpreter/v1.10.4
+grep ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
+docker load -i code-interpreter-sandbox-runner.tar.gz
+cd ~/code-interpreter
+sed -i 's#:docker-compose.direct.yml##' .env
+grep ^COMPOSE_FILE .env    # must not list docker-compose.direct.yml
+'@
 ```
 
 **Fresh setup** (no Path A, or the Docker Engine fallback): load everything
@@ -314,6 +459,32 @@ COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server
 EOF
 ```
 
+PowerShell:
+
+```powershell
+ub @'
+[ -d Docker-files ] || GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
+cd Docker-files && git pull && git lfs pull --exclude "*sandbox-runner-direct*"
+cd code-interpreter/v1.10.4
+grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c
+for f in *.tar.gz; do
+  [ "$f" = code-interpreter-sandbox-runner-direct.tar.gz ] || docker load -i "$f"
+done
+cd ~
+[ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,server}.yml code-interpreter/
+cd code-interpreter
+cp .env.example .env
+sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
+cat >> .env <<'EOF'
+
+# --- Path B: KVM ---
+COMPOSE_PROJECT_NAME=code-interpreter
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
+EOF
+'@
+```
+
 No `build-packages.sh`: the runtimes are inside the KVM runner image.
 
 What to check after the download and load commands above, and how to fix a
@@ -324,6 +495,13 @@ failed download: [After the LFS download](#after-the-lfs-download).
 ```bash
 docker compose up -d
 docker compose ps              # sandbox-runner "(healthy)", all services Up
+```
+
+PowerShell:
+
+```powershell
+dc up -d
+dc ps                          # sandbox-runner "(healthy)", all services Up
 ```
 
 The KVM runner can take a minute or two to report healthy on first start;
@@ -366,7 +544,8 @@ fixed it loops on `unshare: Operation not permitted`. That is why Path A uses
 ### After the LFS download
 
 What to do between `git lfs pull` and starting the stack. Run these in
-`~/Docker-files/code-interpreter/v1.10.4`. Which files you need:
+`~/Docker-files/code-interpreter/v1.10.4` (the PowerShell versions change to
+that folder themselves). Which files you need:
 
 | Setup | Needed (large) | Left as a pointer (fine) |
 |---|---|---|
@@ -378,6 +557,12 @@ What to do between `git lfs pull` and starting the stack. Run these in
 
 ```bash
 ls -lh *.tar.gz
+```
+
+PowerShell:
+
+```powershell
+ub 'cd ~/Docker-files/code-interpreter/v1.10.4 && ls -lh *.tar.gz'
 ```
 
 Real files are large: about 1.3G for `code-interpreter-sandbox-runner`,
@@ -394,12 +579,27 @@ grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c                       # 
 grep ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c      # Path B, from Path A
 ```
 
+PowerShell (run the one line for your setup):
+
+```powershell
+ub "cd ~/Docker-files/code-interpreter/v1.10.4 && grep -v ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c"   # Path A
+ub 'cd ~/Docker-files/code-interpreter/v1.10.4 && grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c'                       # Path B, fresh
+ub "cd ~/Docker-files/code-interpreter/v1.10.4 && grep ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c"      # Path B, from Path A
+```
+
 Every line must end in `OK`. For a `FAILED` file, from `~/Docker-files`:
 
 ```bash
 rm code-interpreter/v1.10.4/<file>.tar.gz
 git lfs fsck                                  # moves a corrupt stored copy aside
 git lfs pull --include "*<file>.tar.gz"       # restores or re-downloads it
+```
+
+PowerShell (put the file's name in `$file` first, without `.tar.gz`):
+
+```powershell
+$file = 'code-interpreter-api'
+ub "cd ~/Docker-files && rm code-interpreter/v1.10.4/$file.tar.gz && git lfs fsck && git lfs pull --include '*$file.tar.gz'"
 ```
 
 then check it again.
@@ -423,6 +623,12 @@ The 1.3 GB KVM runner takes a minute or so.
 docker images 'ghcr.io/librechat-ai/*'
 ```
 
+PowerShell:
+
+```powershell
+ub "docker images 'ghcr.io/librechat-ai/*'"
+```
+
 Both paths need `code-interpreter-api`, `-worker`, `-file-server`,
 `-egress-gateway` and `-tool-call-server`, plus the runner for your path:
 `code-interpreter-sandbox-runner-direct` (Path A) or
@@ -441,6 +647,12 @@ you can delete it:
 
 ```bash
 rm -rf ~/Docker-files
+```
+
+PowerShell:
+
+```powershell
+ub 'rm -rf ~/Docker-files'
 ```
 
 Clone it again if you need to reload. (`git lfs prune` does not help here: it
@@ -468,8 +680,23 @@ file's `id` from the response:
 curl "localhost:3112/v1/download/<session_id>/<file id>?kind=user"   # hi
 ```
 
+PowerShell (runs from Windows; it fills in `session_id` and the file `id` for
+you):
+
+```powershell
+Invoke-RestMethod http://localhost:3112/v1/health        # OK
+Invoke-RestMethod http://localhost:13000/ready           # status ready, redis ok, s3 ok
+Invoke-RestMethod http://localhost:3190/health           # OK
+
+$body = @{ lang = 'py'; code = "print(6*7)`nopen('/mnt/data/hello.txt','w').write('hi')" } | ConvertTo-Json
+$r = Invoke-RestMethod http://localhost:3112/v1/exec -Method Post -ContentType 'application/json' -Body $body
+$r | ConvertTo-Json -Depth 5                             # stdout 42, code 0, files: hello.txt
+Invoke-RestMethod "http://localhost:3112/v1/download/$($r.session_id)/$($r.files[0].id)?kind=user"   # hi
+```
+
 If `code` is `255` with empty output, the sandbox failed to start the run;
-the reason is in `docker compose logs sandbox-runner`.
+the reason is in `docker compose logs sandbox-runner` (PowerShell:
+`dc logs sandbox-runner`).
 
 ### LibreChat in Docker
 
@@ -552,7 +779,8 @@ Desktop.
 
 | Symptom | Check |
 |---|---|
-| `sandbox-runner` never becomes healthy, or runs return `"code":255` | `docker compose logs --tail 50 sandbox-runner` |
+| `sandbox-runner` never becomes healthy, or runs return `"code":255` | `docker compose logs --tail 50 sandbox-runner` (PowerShell: `dc logs --tail 50 sandbox-runner`) |
+| `Cannot connect to the Docker daemon at unix:///var/run/docker.sock` in Ubuntu | Docker is not reachable from Ubuntu; `docker version` shows only a Client section. Start Docker Desktop and turn on Settings → Resources → WSL integration for your distro, then open a new terminal. Don't switch to the `desktop-linux` context: its `npipe` endpoint only works from Windows. With the [Docker Engine fallback](#b4-fallback-docker-engine-inside-ubuntu), start the engine with `sudo service docker start`. |
 | `curl localhost:3112/…` from Ubuntu says "Connection refused" though `docker compose ps` shows `api` up | A 2023 WSL pre-release bug refused connections to `127.0.0.1`-published ports ([docker/for-win#13182](https://github.com/docker/for-win/issues/13182), closed). Run `wsl --update`, and try the same request from PowerShell with `curl.exe` to see whether only WSL is affected. |
 | LibreChat cannot reach `code-interpreter-api` | Start the code interpreter first; check `docker network inspect code-interpreter_default` lists LibreChat's container. |
 | Containers restart or get killed under load | See [Memory](#memory). |
@@ -568,18 +796,20 @@ Desktop.
 ### Day-to-day
 
 From `~/code-interpreter` (with `COMPOSE_FILE` in `.env`, no `-f` flags
-needed):
+needed), or from any folder in PowerShell with the `dc` helper from
+[Bash or PowerShell](#bash-or-powershell):
 
-| Task | Command |
-|---|---|
-| Start | `docker compose up -d` |
-| Status | `docker compose ps` |
-| Logs when a run fails | `docker compose logs -f sandbox-runner service-worker` |
-| Stop | `docker compose down` |
-| Stop and delete stored files | `docker compose down -v` |
+| Task | bash (in `~/code-interpreter`) | PowerShell |
+|---|---|---|
+| Start | `docker compose up -d` | `dc up -d` |
+| Status | `docker compose ps` | `dc ps` |
+| Logs when a run fails | `docker compose logs -f sandbox-runner service-worker` | `dc logs -f sandbox-runner service-worker` |
+| Stop | `docker compose down` | `dc down` |
+| Stop and delete stored files | `docker compose down -v` | `dc down -v` |
 
 Only the sandbox runner has a restart policy upstream; after a reboot (or
-after Docker Desktop restarts), run `docker compose up -d` again.
+after Docker Desktop restarts), run `docker compose up -d` (or `dc up -d`)
+again.
 
 ### Ports
 
