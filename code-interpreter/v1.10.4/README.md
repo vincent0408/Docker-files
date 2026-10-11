@@ -95,8 +95,8 @@ cd ~
 ```
 
 The skipped file stays behind as a small LFS pointer, which is why both
-commands leave it out. Each load prints
-`Loaded image: ghcr.io/librechat-ai/<name>:sha-a62d69e…`.
+commands leave it out. What to check at each stage, and how to fix a failed
+download: [After the LFS download](#after-the-lfs-download).
 
 ### A3. Get the Compose files and set `.env`
 
@@ -312,6 +312,9 @@ EOF
 
 No `build-packages.sh`: the runtimes are inside the KVM runner image.
 
+What to check after the download and load commands above, and how to fix a
+failed download: [After the LFS download](#after-the-lfs-download).
+
 ### B6. Start and check
 
 ```bash
@@ -355,6 +358,91 @@ Setting `KVM_ENABLED=false` in upstream's `.env` alone does not give a working
 no-KVM stack: the runner cannot be created without `/dev/kvm`, and with that
 fixed it loops on `unshare: Operation not permitted`. That is why Path A uses
 `docker-compose.direct.yml`.
+
+### After the LFS download
+
+What to do between `git lfs pull` and starting the stack. Run these in
+`~/Docker-files/code-interpreter/v1.10.4`. Which files you need:
+
+| Setup | Needed (large) | Left as a pointer (fine) |
+|---|---|---|
+| Path A | everything except `code-interpreter-sandbox-runner.tar.gz` | `code-interpreter-sandbox-runner.tar.gz` |
+| Path B, fresh | everything except `code-interpreter-sandbox-runner-direct.tar.gz` | `code-interpreter-sandbox-runner-direct.tar.gz` |
+| Path B, coming from Path A | `code-interpreter-sandbox-runner.tar.gz` (the rest is already loaded) | — |
+
+**1. Check the download finished**
+
+```bash
+ls -lh *.tar.gz
+```
+
+Real files are large: about 1.3G for `code-interpreter-sandbox-runner`,
+343M for `-direct`, about 100M for each of the others. A file of about
+**134 bytes** is still an LFS pointer, not the image. If one you need is that
+small, run your `git lfs pull …` command again; it resumes and only fetches
+what is missing.
+
+**2. Verify the checksums**
+
+```bash
+grep -v ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c    # Path A
+grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c                       # Path B, fresh
+grep ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c      # Path B, from Path A
+```
+
+Every line must end in `OK`. For a `FAILED` file, from `~/Docker-files`:
+
+```bash
+rm code-interpreter/v1.10.4/<file>.tar.gz
+git lfs fsck                                  # moves a corrupt stored copy aside
+git lfs pull --include "*<file>.tar.gz"       # restores or re-downloads it
+```
+
+then check it again.
+
+**3. Load the images into Docker**
+
+`docker load` reads the gzipped archives directly; there is nothing to
+extract. Use the loop from [A2](#a2-download-and-load-the-images) or
+[B5](#b5-load-the-kvm-runner-and-switch-compose_file), which skips the
+pointer file. Each file prints a line like:
+
+```text
+Loaded image: ghcr.io/librechat-ai/code-interpreter-api:sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24
+```
+
+The 1.3 GB KVM runner takes a minute or so.
+
+**4. Confirm Docker has them**
+
+```bash
+docker images 'ghcr.io/librechat-ai/*'
+```
+
+Both paths need `code-interpreter-api`, `-worker`, `-file-server`,
+`-egress-gateway` and `-tool-call-server`, plus the runner for your path:
+`code-interpreter-sandbox-runner-direct` (Path A) or
+`code-interpreter-sandbox-runner` (Path B). Having both runners is fine.
+
+Docker keeps its own copy, so the archives are only needed again to reload
+(after resetting Docker Desktop, or on another machine).
+
+**5. Optional: free the disk space**
+
+The clone holds every downloaded archive twice: once in the folder and once
+in Git LFS's store inside `.git` (about 2.1 GB each when everything is
+downloaded). After the images are loaded, the clone is not needed to run the
+stack (the Compose files you use are the copies in `~/code-interpreter`), so
+you can delete it:
+
+```bash
+rm -rf ~/Docker-files
+```
+
+Clone it again if you need to reload. (`git lfs prune` does not help here: it
+only removes old versions, not the files you have checked out.)
+
+Then continue with A3 or the rest of B5.
 
 ### Check it works
 
