@@ -434,7 +434,8 @@ grep ^COMPOSE_FILE .env    # must not list docker-compose.direct.yml
 ```
 
 **Fresh setup** (no Path A, or the Docker Engine fallback): load everything
-except the direct runner and create `.env`:
+except the direct runner. Already downloaded and loaded the images? Skip to
+[B5a](#b5a-get-the-compose-files-and-set-env-fresh-setup).
 
 ```bash
 cd ~
@@ -445,18 +446,6 @@ grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c
 for f in *.tar.gz; do
   [ "$f" = code-interpreter-sandbox-runner-direct.tar.gz ] || docker load -i "$f"
 done
-cd ~
-[ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
-cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,server}.yml code-interpreter/
-cd code-interpreter
-cp .env.example .env
-sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
-cat >> .env <<'EOF'
-
-# --- Path B: KVM ---
-COMPOSE_PROJECT_NAME=code-interpreter
-COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
-EOF
 ```
 
 PowerShell:
@@ -470,10 +459,38 @@ grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c
 for f in *.tar.gz; do
   [ "$f" = code-interpreter-sandbox-runner-direct.tar.gz ] || docker load -i "$f"
 done
+'@
+```
+
+What to check after the download and load commands above, and how to fix a
+failed download: [After the LFS download](#after-the-lfs-download).
+
+### B5a. Get the Compose files and set `.env` (fresh setup)
+
+The images alone don't start anything: the stack is started from the
+original repo's `docker-compose.yaml` plus this folder's two override files.
+This step doesn't need your Docker-files clone (the override files are
+downloaded from GitHub), so it works wherever you cloned it, or after you
+deleted it.
+
+First confirm the six images are loaded:
+
+```bash
+docker images --format '{{.Repository}}' 'ghcr.io/librechat-ai/*' | sort
+```
+
+It must list `code-interpreter-api`, `-egress-gateway`, `-file-server`,
+`-sandbox-runner`, `-tool-call-server` and `-worker` (`-sandbox-runner-direct`
+as well is fine). Then:
+
+```bash
 cd ~
 [ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
-cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,server}.yml code-interpreter/
 cd code-interpreter
+for f in images server; do
+  curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.$f.yml"
+done
+[ -f .env ] && cp .env .env.backup
 cp .env.example .env
 sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
 cat >> .env <<'EOF'
@@ -482,13 +499,38 @@ cat >> .env <<'EOF'
 COMPOSE_PROJECT_NAME=code-interpreter
 COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
 EOF
+docker compose config sandbox-runner | grep -E 'image:|/dev/kvm|KVM_ENABLED'
+```
+
+PowerShell:
+
+```powershell
+ub "docker images --format '{{.Repository}}' 'ghcr.io/librechat-ai/*' | sort"
+ub @'
+[ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+cd code-interpreter
+for f in images server; do
+  curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.$f.yml"
+done
+[ -f .env ] && cp .env .env.backup
+cp .env.example .env
+sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
+cat >> .env <<'EOF'
+
+# --- Path B: KVM ---
+COMPOSE_PROJECT_NAME=code-interpreter
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
+EOF
+docker compose config sandbox-runner | grep -E 'image:|/dev/kvm|KVM_ENABLED'
 '@
 ```
 
-No `build-packages.sh`: the runtimes are inside the KVM runner image.
+The last line must show the `code-interpreter-sandbox-runner` image (not
+`-direct`), `/dev/kvm` and `KVM_ENABLED: "true"`. Running this again is safe:
+it keeps the clone and backs up the old `.env` to `.env.backup` (with a new
+`CODEAPI_BRIDGE_TOKEN`).
 
-What to check after the download and load commands above, and how to fix a
-failed download: [After the LFS download](#after-the-lfs-download).
+No `build-packages.sh`: the runtimes are inside the KVM runner image.
 
 ### B6. Start and check
 
@@ -658,7 +700,7 @@ ub 'rm -rf ~/Docker-files'
 Clone it again if you need to reload. (`git lfs prune` does not help here: it
 only removes old versions, not the files you have checked out.)
 
-Then continue with A3 or the rest of B5.
+Then continue with A3 (Path A) or B5a (Path B, fresh setup).
 
 ### Check it works
 
@@ -783,6 +825,7 @@ Desktop.
 | `Cannot connect to the Docker daemon at unix:///var/run/docker.sock` in Ubuntu | Docker is not reachable from Ubuntu; `docker version` shows only a Client section. Start Docker Desktop and turn on Settings → Resources → WSL integration for your distro, then open a new terminal. Don't switch to the `desktop-linux` context: its `npipe` endpoint only works from Windows. With the [Docker Engine fallback](#b4-fallback-docker-engine-inside-ubuntu), start the engine with `sudo service docker start`. |
 | `curl localhost:3112/…` from Ubuntu says "Connection refused" though `docker compose ps` shows `api` up | A 2023 WSL pre-release bug refused connections to `127.0.0.1`-published ports ([docker/for-win#13182](https://github.com/docker/for-win/issues/13182), closed). Run `wsl --update`, and try the same request from PowerShell with `curl.exe` to see whether only WSL is affected. |
 | LibreChat cannot reach `code-interpreter-api` | Start the code interpreter first; check `docker network inspect code-interpreter_default` lists LibreChat's container. |
+| `git lfs pull` ends with `cannot add to the index - missing --add option?` | Usually a clone under `/mnt/c` or one used by both Git for Windows and WSL's Git. The download itself has normally finished: check the files with [After the LFS download](#after-the-lfs-download) steps 1 and 2. If they are fine, run `git status` once and continue; if not, clone again into `~/` in Ubuntu. |
 | Containers restart or get killed under load | See [Memory](#memory). |
 
 ### Security
