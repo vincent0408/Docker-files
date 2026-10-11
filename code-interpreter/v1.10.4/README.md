@@ -34,7 +34,7 @@ differ in how the sandbox isolates code.
 | Sandbox | NsJail directly in a container | NsJail inside a libkrun microVM with its own kernel |
 | Isolation | Weaker: shares the Linux kernel; no per-run memory or process limits. **Your own code only.** | Strong: the design upstream calls reasonably secure |
 | Windows | Windows 10 or 11 | **Windows 11** (nested virtualization in WSL2) |
-| Docker | Docker Desktop (WSL2 backend) | Docker Engine installed **inside Ubuntu** |
+| Docker | Docker Desktop (WSL2 backend) | Docker Desktop (WSL2 backend); Docker Engine inside Ubuntu only as a fallback |
 | Runner image | `sandbox-runner-direct` (359 MB) | `sandbox-runner` (1.35 GB) |
 | Language runtimes | Built once with `build-packages.sh` | Already in the image |
 | Compose files | `images`, `direct`, `server` | `images`, `server` |
@@ -156,13 +156,25 @@ network, as in [LibreChat in Docker](#librechat-in-docker).
 
 ---
 
-## Path B: KVM (Windows 11, Docker Engine in Ubuntu)
+## Path B: KVM (Windows 11)
 
 Windows itself has no `/dev/kvm`; it only exists on Linux. WSL2 runs a real
 Linux kernel, and on Windows 11 it can pass hardware virtualization through
-to that kernel (nested virtualization), which creates `/dev/kvm`. The sandbox
-then starts its microVM inside WSL2. These steps were not tested on Windows
-hardware; the `/dev/kvm` checks tell you at each stage whether it worked.
+to that kernel (nested virtualization), which creates `/dev/kvm`. Docker
+Desktop's WSL2 engine runs in that same WSL2 VM, so its containers can be
+given `/dev/kvm` too, and the sandbox starts its microVM there.
+
+This does **not** work on Windows 10: WSL there forces nested virtualization
+off whatever `.wslconfig` says
+([microsoft/WSL#40735](https://github.com/microsoft/WSL/issues/40735)). A
+work-managed PC can also block it by policy
+([Intune setting](https://learn.microsoft.com/windows/wsl/intune)). The
+[dockur/windows](https://github.com/dockur/windows) project, which needs the
+same `/dev/kvm` access, lists Docker Desktop on Windows 11 with nested
+virtualization as supported and Docker Desktop on Windows 10 as not.
+
+These steps were not tested on Windows hardware for this repo; the checks in
+B3 tell you whether your machine can do it before you change anything else.
 
 ### Settings to make
 
@@ -170,24 +182,27 @@ hardware; the `/dev/kvm` checks tell you at each stage whether it worked.
 |---|---|---|
 | BIOS/UEFI | Intel VT-x or AMD-V/SVM on | Task Manager → Performance → CPU must say "Virtualization: Enabled". |
 | `C:\Users\<you>\.wslconfig` | `[wsl2]`, `nestedVirtualization=true`, and `memory=8GB` or more | Creates `/dev/kvm` in WSL2. The sandbox microVM is configured with 2 GB and 2 vCPUs (`LAUNCHER_RAM_MIB`, `LAUNCHER_VCPUS` in `docker-compose.yaml`) on top of the other services. |
-| Docker Desktop | Quit it, or Settings → Resources → WSL integration **off** for Ubuntu | Its hidden VM does not reliably pass `/dev/kvm` to containers; Ubuntu's own Docker Engine must own the `docker` command. |
+| Docker Desktop | Same settings as Path A (WSL 2 based engine, WSL integration on for Ubuntu) | Only if B3 shows Docker Desktop can't pass `/dev/kvm`, use the [Docker Engine fallback](#b4-fallback-docker-engine-inside-ubuntu). |
 | `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN`, `COMPOSE_PROJECT_NAME=code-interpreter` | As in Path A. |
 | `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml` | Same as Path A **without** `docker-compose.direct.yml`. |
-| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | See [B7](#b7-point-librechat-at-it). |
+| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | Same as Path A ([A6](#a6-point-librechat-at-it)). |
 
-### B1. Install WSL2 and Ubuntu (PowerShell as administrator)
+### B1. Check Windows and WSL (PowerShell)
 
 ```powershell
-wsl --install -d Ubuntu
+winver            # must be Windows 11
 wsl --update
 wsl --version
 ```
 
-Restart Windows if asked, then open Ubuntu once to create your Linux user.
+No WSL2 and Ubuntu yet? In an administrator PowerShell:
+`wsl --install -d Ubuntu`, restart if asked, and open Ubuntu once to create
+your Linux user. You also need Docker Desktop with the Path A settings.
 
 ### B2. Turn on nested virtualization
 
-Create or edit `C:\Users\<you>\.wslconfig`:
+Create or edit `C:\Users\<you>\.wslconfig` (add the lines under an existing
+`[wsl2]` section if there is one):
 
 ```ini
 [wsl2]
@@ -195,19 +210,23 @@ nestedVirtualization=true
 memory=8GB
 ```
 
-Then restart WSL from PowerShell:
+Then quit Docker Desktop (tray icon → Quit), run `wsl --shutdown` in
+PowerShell, and start Docker Desktop again.
 
-```powershell
-wsl --shutdown
-```
-
-### B3. Check for `/dev/kvm` (Ubuntu terminal)
+### B3. Check for KVM (Ubuntu terminal)
 
 ```bash
 ls -l /dev/kvm
+docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
 ```
 
-If it says "No such file", load the module for your CPU and check again:
+| `ls -l /dev/kvm` | `docker run …` | Meaning | Next |
+|---|---|---|---|
+| Prints the device | Prints the device | Docker Desktop passes KVM to containers | B5 |
+| Prints the device | Error | WSL has KVM, Docker Desktop does not pass it on | [B4 fallback](#b4-fallback-docker-engine-inside-ubuntu) |
+| "No such file" | — | KVM is not reaching WSL | See below |
+
+If `/dev/kvm` is missing, load the module for your CPU and check again:
 
 ```bash
 sudo modprobe kvm_intel   # Intel
@@ -215,45 +234,60 @@ sudo modprobe kvm_amd     # AMD
 ```
 
 Still missing means virtualization is not reaching WSL: recheck the BIOS
-setting, that you are on Windows 11, and that `wsl --update` ran. Until it
-appears, stay on Path A.
+setting, that you are on Windows 11, that `.wslconfig` is in your user folder
+(not `.wslconfig.txt`), and that you ran `wsl --shutdown` after editing it.
+Until it appears, stay on Path A.
 
-Give your user access to it:
+### B4 (fallback): Docker Engine inside Ubuntu
 
-```bash
-sudo usermod -aG kvm $USER
-```
+Only if B3 showed `/dev/kvm` in Ubuntu but the `docker run` line failed. This
+replaces Docker Desktop for the code interpreter with Docker Engine running
+directly in Ubuntu, which uses the kernel you just checked.
 
-### B4. Install Docker Engine inside Ubuntu
-
-Quit Docker Desktop (tray icon), or turn its WSL integration off for Ubuntu,
-so it does not take over the `docker` command. Then, in Ubuntu:
+Quit Docker Desktop, or turn its WSL integration off for Ubuntu, so it does not
+take over the `docker` command. Then:
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
-sudo apt-get install -y git git-lfs openssl curl
+sudo usermod -aG docker,kvm $USER
 ```
 
-Close and reopen the Ubuntu terminal (for the new groups), start Docker if
-it is not running (`sudo service docker start`), and confirm containers can
-use KVM:
+Close and reopen the Ubuntu terminal (for the new groups), start Docker if it
+is not running (`sudo service docker start`), and check again:
 
 ```bash
 docker compose version          # needs 2.24.4 or later
 docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
-cd ~
 ```
 
 The `docker run` line must print the device. If it does not, stay on Path A.
 
-### B5. Download, load and set up
+Docker Engine has its own image store and networks, separate from Docker
+Desktop's. So with this fallback, B5 loads all six images again (use the
+commands for a fresh setup), and a LibreChat running in Docker must also run
+on this engine to join the code interpreter's network.
 
-This Docker Engine has its own image store, separate from Docker Desktop's,
-so the images are loaded here even if you already did Path A. Path B does not
-use the direct runner, so skip it:
+### B5. Load the KVM runner and switch `COMPOSE_FILE`
+
+**Coming from Path A on Docker Desktop** (the usual case): the other five
+images are already loaded, so only the KVM runner is needed:
 
 ```bash
+cd ~/code-interpreter && docker compose down     # stop Path A
+cd ~/Docker-files && git pull && git lfs pull --include "*sandbox-runner.tar.gz"
+cd code-interpreter/v1.10.4
+grep ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
+docker load -i code-interpreter-sandbox-runner.tar.gz
+cd ~/code-interpreter
+sed -i 's#:docker-compose.direct.yml##' .env
+grep ^COMPOSE_FILE .env    # must not list docker-compose.direct.yml
+```
+
+**Fresh setup** (no Path A, or the Docker Engine fallback): load everything
+except the direct runner and create `.env`:
+
+```bash
+cd ~
 [ -d Docker-files ] || GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
 cd Docker-files && git pull && git lfs pull --exclude "*sandbox-runner-direct*"
 cd code-interpreter/v1.10.4
@@ -262,18 +296,7 @@ for f in *.tar.gz; do
   [ "$f" = code-interpreter-sandbox-runner-direct.tar.gz ] || docker load -i "$f"
 done
 cd ~
-```
-
-If you already have `~/Docker-files` from Path A, `git lfs pull` now also
-downloads the KVM runner; the direct runner you loaded earlier is already on
-disk and is simply not loaded here.
-
-Then the Compose files and `.env`. If `~/code-interpreter` exists from Path A,
-skip the clone and the `.env` creation and only change `COMPOSE_FILE` (see
-[Switching from Path A](#switching-from-path-a-to-path-b)):
-
-```bash
-git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+[ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
 cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,server}.yml code-interpreter/
 cd code-interpreter
 cp .env.example .env
@@ -298,39 +321,19 @@ docker compose ps              # sandbox-runner "(healthy)", all services Up
 The KVM runner can take a minute or two to report healthy on first start;
 `service-worker` waits for it. Then run the [checks](#check-it-works).
 
-### B7. Point LibreChat at it
+### B7. LibreChat
 
-**LibreChat running directly** (`npm run backend`, on Windows or in WSL):
+Nothing changes from [A6](#a6-point-librechat-at-it): same
+`LIBRECHAT_CODE_BASEURL`, same network for a LibreChat container. With the
+Docker Engine fallback, a LibreChat container must run on that engine too,
+and from Windows `localhost:3112` reaches the API through WSL2's localhost
+forwarding.
 
-```bash
-LIBRECHAT_CODE_BASEURL=http://localhost:3112/v1
-```
+### Going back to Path A
 
-From Windows, WSL2 forwards `localhost` to ports listening inside it.
-
-**LibreChat running in Docker**: run it on the same Docker Engine inside
-Ubuntu (not Docker Desktop, which is a separate engine and network), and join
-it to the code interpreter's network as in
-[LibreChat in Docker](#librechat-in-docker).
-
-### Switching from Path A to Path B
-
-1. Stop Path A while Docker Desktop is still running:
-   `cd ~/code-interpreter && docker compose down -v`.
-2. Follow B1–B5. In `~/code-interpreter/.env`, remove
-   `docker-compose.direct.yml` from `COMPOSE_FILE`:
-
-   ```bash
-   sed -i 's#:docker-compose.direct.yml##' .env
-   grep ^COMPOSE_FILE .env
-   ```
-
-3. Start with B6. `./data/pkgs` is no longer used; delete it if you want the
-   space back.
-
-To go back to Path A, add `docker-compose.direct.yml` back to `COMPOSE_FILE`
-and use Docker Desktop again (its own image store still has the Path A
-images).
+Add `docker-compose.direct.yml` back to `COMPOSE_FILE` (after
+`docker-compose.images.yml`), then `docker compose up -d`. The direct runner
+image and `./data/pkgs` are still there.
 
 ---
 
