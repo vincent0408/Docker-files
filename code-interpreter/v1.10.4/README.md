@@ -37,8 +37,9 @@ differ in how the sandbox isolates code.
 | Docker | Docker Desktop (WSL2 backend) | Docker Desktop (WSL2 backend); Docker Engine inside Ubuntu only as a fallback |
 | Runner image | `sandbox-runner-direct` (359 MB) | `sandbox-runner` (1.35 GB) |
 | Language runtimes | Built once with `build-packages.sh` | Already in the image |
-| Compose files | `images`, `direct`, `server` | `images`, `server` |
-| Tested | Same files and settings run end to end on Linux; Windows-side settings not tested on Windows hardware | Not tested (no `/dev/kvm` on the test machine) |
+| Extra step | — | Build the [patched runner](KVM-RUNNER-PATCH.md) (B5b): the published KVM runner can't run code as shipped |
+| Compose files | `images`, `direct`, `server` | `images`, `kvm-fix`, `server` |
+| Tested | Same files and settings run end to end on Linux; Windows-side settings not tested on Windows hardware | Runs code on Windows 11 with Docker Desktop after the [runner patch](KVM-RUNNER-PATCH.md); a full LibreChat chat run, file upload and download not yet tested |
 | Commands | bash (Ubuntu terminal) or PowerShell; see [Bash or PowerShell](#bash-or-powershell) | Same |
 
 Either way you need: Git, Git LFS, `openssl` and `curl` in Ubuntu; Docker
@@ -166,6 +167,8 @@ cat >> .env <<'EOF'
 
 # --- Path A: no-KVM ---
 COMPOSE_PROJECT_NAME=code-interpreter
+# lets Compose run from Windows PowerShell too (its default separator there is ;)
+COMPOSE_PATH_SEPARATOR=:
 COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml
 EOF
 ```
@@ -183,6 +186,8 @@ cat >> .env <<'EOF'
 
 # --- Path A: no-KVM ---
 COMPOSE_PROJECT_NAME=code-interpreter
+# lets Compose run from Windows PowerShell too (its default separator there is ;)
+COMPOSE_PATH_SEPARATOR=:
 COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml
 EOF
 '@
@@ -243,7 +248,18 @@ Docker Desktop forwards the `127.0.0.1` ports to Windows' `localhost`. About
 the API key, see [LibreChat settings](#librechat-settings).
 
 **LibreChat running in Docker Desktop**: join it to the code interpreter's
-network, as in [LibreChat in Docker](#librechat-in-docker).
+network, as in [LibreChat in Docker](#librechat-in-docker). Or, without
+touching LibreChat's Compose files, reach the API through Docker Desktop's
+host alias:
+
+```bash
+LIBRECHAT_CODE_BASEURL=http://host.docker.internal:3112/v1
+LIBRECHAT_CODE_API_KEY=local-no-auth
+```
+
+Either way, the URL must end in `/v1` (without it every call is a 404), and a
+LibreChat container only reads `.env` when it is created, so recreate it after
+editing: `docker compose up -d --force-recreate api` in the LibreChat folder.
 
 ---
 
@@ -279,7 +295,7 @@ instructions, with the questions it must ask you before changing anything.
 | `C:\Users\<you>\.wslconfig` | `[wsl2]` and `nestedVirtualization=true` | Creates `/dev/kvm` in WSL2. Memory usually needs no setting; see [Memory](#memory). |
 | Docker Desktop | Same settings as Path A (WSL 2 based engine, WSL integration on for Ubuntu) | Only if B3 shows Docker Desktop can't pass `/dev/kvm`, use the [Docker Engine fallback](#b4-fallback-docker-engine-inside-ubuntu). |
 | `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN`, `COMPOSE_PROJECT_NAME=code-interpreter` | As in Path A. |
-| `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml` | Same as Path A **without** `docker-compose.direct.yml`. |
+| `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.kvm-fix.yml:docker-compose.server.yml` | Path A's list with `docker-compose.kvm-fix.yml` in place of `docker-compose.direct.yml`. |
 | LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` and `LIBRECHAT_CODE_API_KEY=…` | Same as Path A ([A6](#a6-point-librechat-at-it)). |
 
 ### B1. Check Windows and WSL (PowerShell)
@@ -405,7 +421,10 @@ on this engine to join the code interpreter's network.
 ### B5. Load the KVM runner and switch `COMPOSE_FILE`
 
 **Coming from Path A on Docker Desktop** (the usual case): the other five
-images are already loaded, so only the KVM runner is needed:
+images are already loaded, so only the KVM runner is needed. This also swaps
+`docker-compose.direct.yml` for `docker-compose.kvm-fix.yml` in `COMPOSE_FILE`;
+then build the patched runner in
+[B5b](#b5b-build-the-patched-kvm-runner) before starting:
 
 ```bash
 cd ~/code-interpreter && docker compose down     # stop Path A
@@ -414,8 +433,9 @@ cd code-interpreter/v1.10.4
 grep ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
 docker load -i code-interpreter-sandbox-runner.tar.gz
 cd ~/code-interpreter
-sed -i 's#:docker-compose.direct.yml##' .env
-grep ^COMPOSE_FILE .env    # must not list docker-compose.direct.yml
+curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.kvm-fix.yml"
+sed -i 's#:docker-compose.direct.yml#:docker-compose.kvm-fix.yml#' .env
+grep ^COMPOSE_FILE .env    # must list docker-compose.kvm-fix.yml, not docker-compose.direct.yml
 ```
 
 PowerShell:
@@ -428,8 +448,9 @@ cd code-interpreter/v1.10.4
 grep ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
 docker load -i code-interpreter-sandbox-runner.tar.gz
 cd ~/code-interpreter
-sed -i 's#:docker-compose.direct.yml##' .env
-grep ^COMPOSE_FILE .env    # must not list docker-compose.direct.yml
+curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.kvm-fix.yml"
+sed -i 's#:docker-compose.direct.yml#:docker-compose.kvm-fix.yml#' .env
+grep ^COMPOSE_FILE .env    # must list docker-compose.kvm-fix.yml, not docker-compose.direct.yml
 '@
 ```
 
@@ -468,7 +489,7 @@ failed download: [After the LFS download](#after-the-lfs-download).
 ### B5a. Get the Compose files and set `.env` (fresh setup)
 
 The images alone don't start anything: the stack is started from the
-original repo's `docker-compose.yaml` plus this folder's two override files.
+original repo's `docker-compose.yaml` plus this folder's three override files.
 This step doesn't need your Docker-files clone (the override files are
 downloaded from GitHub), so it works wherever you cloned it, or after you
 deleted it.
@@ -487,7 +508,7 @@ as well is fine). Then:
 cd ~
 [ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
 cd code-interpreter
-for f in images server; do
+for f in images kvm-fix server; do
   curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.$f.yml"
 done
 [ -f .env ] && cp .env .env.backup
@@ -497,7 +518,9 @@ cat >> .env <<'EOF'
 
 # --- Path B: KVM ---
 COMPOSE_PROJECT_NAME=code-interpreter
-COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
+# lets Compose run from Windows PowerShell too (its default separator there is ;)
+COMPOSE_PATH_SEPARATOR=:
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.kvm-fix.yml:docker-compose.server.yml
 EOF
 docker compose config sandbox-runner | grep -E 'image:|/dev/kvm|KVM_ENABLED'
 ```
@@ -509,7 +532,7 @@ ub "docker images --format '{{.Repository}}' 'ghcr.io/librechat-ai/*' | sort"
 ub @'
 [ -d code-interpreter ] || git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
 cd code-interpreter
-for f in images server; do
+for f in images kvm-fix server; do
   curl -fsSLO "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/docker-compose.$f.yml"
 done
 [ -f .env ] && cp .env .env.backup
@@ -519,18 +542,60 @@ cat >> .env <<'EOF'
 
 # --- Path B: KVM ---
 COMPOSE_PROJECT_NAME=code-interpreter
-COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
+# lets Compose run from Windows PowerShell too (its default separator there is ;)
+COMPOSE_PATH_SEPARATOR=:
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.kvm-fix.yml:docker-compose.server.yml
 EOF
 docker compose config sandbox-runner | grep -E 'image:|/dev/kvm|KVM_ENABLED'
 '@
 ```
 
-The last line must show the `code-interpreter-sandbox-runner` image (not
-`-direct`), `/dev/kvm` and `KVM_ENABLED: "true"`. Running this again is safe:
+The last line must show the `local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix` image
+(built in the next step), `/dev/kvm` and `KVM_ENABLED: "true"`. Running this again is safe:
 it keeps the clone and backs up the old `.env` to `.env.backup` (with a new
 `CODEAPI_BRIDGE_TOKEN`).
 
 No `build-packages.sh`: the runtimes are inside the KVM runner image.
+
+### B5b. Build the patched KVM runner
+
+The published KVM runner can't run any code as shipped: inside its microVM
+the sandbox can't find a native module, so every run fails with
+`"Sandbox execution failed"` (sandbox-runner log:
+`Cannot find module '/sandbox_api/.build/anonymous-pipes.node'`). This builds
+a fixed copy of the runner you loaded, adding one symlink inside its guest
+disk; why and how: [KVM-RUNNER-PATCH.md](KVM-RUNNER-PATCH.md).
+`docker-compose.kvm-fix.yml` (in `COMPOSE_FILE` since B5/B5a) makes Compose
+use it.
+
+Needs internet access (it pulls `debian:bookworm-slim`), a few minutes, and
+about 9 GB of free disk while it builds:
+
+```bash
+docker image inspect ghcr.io/librechat-ai/code-interpreter-sandbox-runner:sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24 >/dev/null && echo "base image loaded"
+curl -fsSL "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/Dockerfile.runner-pipe-addon-fix" \
+  | docker build -t local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix -
+docker images local/code-interpreter-sandbox-runner
+docker builder prune -f      # optional: frees the build cache
+```
+
+PowerShell:
+
+```powershell
+ub @'
+docker image inspect ghcr.io/librechat-ai/code-interpreter-sandbox-runner:sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24 >/dev/null && echo "base image loaded"
+curl -fsSL "https://raw.githubusercontent.com/vincent0408/Docker-files/master/code-interpreter/v1.10.4/Dockerfile.runner-pipe-addon-fix" \
+  | docker build -t local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix -
+docker images local/code-interpreter-sandbox-runner
+docker builder prune -f
+'@
+```
+
+The build fails on purpose if the addon or the symlink isn't where it
+expects, or if the disk check (`e2fsck`) finds a problem. Already built it
+under another name, such as `code-interpreter-sandbox-runner:pipe-addon-fix`?
+Retag it instead of rebuilding:
+`docker tag code-interpreter-sandbox-runner:pipe-addon-fix local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix`.
 
 ### B6. Start and check
 
@@ -547,7 +612,13 @@ dc ps                          # sandbox-runner "(healthy)", all services Up
 ```
 
 The KVM runner can take a minute or two to report healthy on first start;
-`service-worker` waits for it. Then run the [checks](#check-it-works).
+`service-worker` waits for it. Check it runs the patched image:
+
+```bash
+docker inspect sandbox-runner --format '{{.Config.Image}}'   # local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix
+```
+
+(PowerShell: `wsl -d Ubuntu -- docker inspect sandbox-runner --format '{{.Config.Image}}'`.) Then run the [checks](#check-it-works).
 
 ### B7. LibreChat
 
@@ -559,8 +630,10 @@ forwarding.
 
 ### Going back to Path A
 
-Add `docker-compose.direct.yml` back to `COMPOSE_FILE` (after
-`docker-compose.images.yml`), then `docker compose up -d`. The direct runner
+Put `docker-compose.direct.yml` back in `COMPOSE_FILE` in place of
+`docker-compose.kvm-fix.yml`
+(`sed -i 's#:docker-compose.kvm-fix.yml#:docker-compose.direct.yml#' .env`),
+then `docker compose up -d`. The direct runner
 image and `./data/pkgs` are still there.
 
 ---
@@ -576,6 +649,7 @@ must match these images.
 |---|---|---|
 | `docker-compose.images.yml` | A and B | Uses the loaded images instead of building (`pull_policy: never`, so a missing image fails fast). Replaces `quay.io/minio/minio`, which no longer allows anonymous pulls, with `cgr.dev/chainguard/minio`. |
 | `docker-compose.direct.yml` | A only | Runs `sandbox-runner-direct` without KVM: `/dev/null` in place of `/dev/kvm`; the capabilities and seccomp profile NsJail needs (from upstream's `docker-compose.mac.yml`), without which it loops on `unshare: Operation not permitted`; a health check that works after the runner switches into its sandbox filesystem; `SANDBOX_PIPE_ADDON`, which the published image is missing (`Cannot find module …anonymous-pipes.node`); and `SANDBOX_USE_CGROUPV2=false` (`Couldn't initialize cgroup 2 user namespace`), which turns off per-run memory and process limits. |
+| `docker-compose.kvm-fix.yml` | B only | Runs the sandbox runner from the locally patched image built in [B5b](#b5b-build-the-patched-kvm-runner) (`local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix`, `pull_policy: never`). Its Dockerfile is `Dockerfile.runner-pipe-addon-fix`; see [KVM-RUNNER-PATCH.md](KVM-RUNNER-PATCH.md). |
 | `docker-compose.server.yml` | A and B | Publishes every port on `127.0.0.1` only. Upstream publishes all of them on every interface, including the sandbox runner (which would let anyone skip the API), Redis (password `localdev`) and MinIO (`minioadmin`/`minioadmin`). Also names the API `code-interpreter-api` for a LibreChat container on the same network. |
 
 Setting `KVM_ENABLED=false` in upstream's `.env` alone does not give a working
@@ -778,16 +852,24 @@ LibreChat reads two settings for the code interpreter
 ([LibreChat docs](https://www.librechat.ai/docs/features/code_interpreter),
 [environment variables](https://www.librechat.ai/docs/configuration/dotenv)):
 
-- `LIBRECHAT_CODE_BASEURL`: where the API is, ending in `/v1`.
+- `LIBRECHAT_CODE_BASEURL`: where the API is, ending in `/v1`. If it is
+  unset, LibreChat silently uses the hosted `https://api.librechat.ai/v1`
+  instead, which answers 401 without a paid key.
 - `LIBRECHAT_CODE_API_KEY`: sent as an `x-api-key` header. Set globally in
   `.env`, it applies to all users; without it, each user may be asked for a
   key. With this stack's default `LOCAL_MODE=true` the API accepts every
   request and ignores the key, so any placeholder such as `local-no-auth`
   works. (A real key or LibreChat's JWT setup only matters once you turn
   `LOCAL_MODE` off.)
+- Leave every `CODEAPI_` setting (`CODEAPI_AUTH_PROVIDER`,
+  `CODEAPI_JWT_ENABLED`, `CODEAPI_JWT_*`) out of LibreChat's `.env`. Any of
+  the first two turns on JWT signing, which needs a private key; without one
+  every run fails in LibreChat with "Code execution is not authorized" before
+  the request reaches this stack.
 
-After editing LibreChat's `.env`, restart LibreChat
-(`docker compose down && docker compose up -d` for the Docker setup).
+After editing LibreChat's `.env`, recreate LibreChat
+(`docker compose up -d --force-recreate api` for the Docker setup; a plain
+`restart` keeps the old environment).
 
 ### Memory
 
@@ -826,6 +908,12 @@ Desktop.
 | `curl localhost:3112/…` from Ubuntu says "Connection refused" though `docker compose ps` shows `api` up | A 2023 WSL pre-release bug refused connections to `127.0.0.1`-published ports ([docker/for-win#13182](https://github.com/docker/for-win/issues/13182), closed). Run `wsl --update`, and try the same request from PowerShell with `curl.exe` to see whether only WSL is affected. |
 | LibreChat cannot reach `code-interpreter-api` | Start the code interpreter first; check `docker network inspect code-interpreter_default` lists LibreChat's container. |
 | `git lfs pull` ends with `cannot add to the index - missing --add option?` | Usually a clone under `/mnt/c` or one used by both Git for Windows and WSL's Git. The download itself has normally finished: check the files with [After the LFS download](#after-the-lfs-download) steps 1 and 2. If they are fine, run `git status` once and continue; if not, clone again into `~/` in Ubuntu. |
+| Runs fail with `"error":"sandbox_execution_failed"`; `sandbox-runner` log says `Cannot find module '/sandbox_api/.build/anonymous-pipes.node'` | Path B is running the unpatched KVM runner. Build the patched one ([B5b](#b5b-build-the-patched-kvm-runner)), check `docker-compose.kvm-fix.yml` is in `COMPOSE_FILE`, then `docker compose up -d --force-recreate sandbox-runner`. |
+| `docker compose up` starts **building** images (for example `apt-install: not found`) | `COMPOSE_FILE` is not in effect: you are in a different folder, its `.env` lacks the line, or you passed `-f`. Run from `~/code-interpreter`, check `docker compose config --images` lists only `ghcr.io/librechat-ai/…`, `local/code-interpreter-sandbox-runner:v1.10.4-pipe-addon-fix`, Redis and MinIO, and never add `--build`. |
+| `sandbox-runner` loops on `exec /usr/local/bin/entrypoint.sh: no such file or directory` | `docker inspect sandbox-runner --format '{{.Config.Image}}'` names a locally built image (no `ghcr.io/` or `local/` prefix): Compose built it from a clone with Windows line endings. `docker compose down`, remove that image, and set up again in `~/` (B5a). |
+| LibreChat: `Code execution is not authorized. Verify access before trying again.` | LibreChat has JWT signing turned on without a key; the request never reaches this stack. Remove the `CODEAPI_` lines from LibreChat's `.env` and recreate it ([LibreChat settings](#librechat-settings)). |
+| LibreChat log: `Code API rejected the request { status: 401 }`, and the `api` container logs nothing | LibreChat is calling the hosted API, not yours: `LIBRECHAT_CODE_BASEURL` is unset, missing `/v1`, or set after the container started. Fix it and recreate LibreChat ([A6](#a6-point-librechat-at-it)). |
+| `docker compose` from Windows PowerShell says `compose file … is invalid` | Compose on Windows splits `COMPOSE_FILE` on `;`. Add `COMPOSE_PATH_SEPARATOR=:` to `code-interpreter/.env`, or use the `dc` helper ([Bash or PowerShell](#bash-or-powershell)), which runs Compose in Ubuntu. |
 | Containers restart or get killed under load | See [Memory](#memory). |
 
 ### Security
