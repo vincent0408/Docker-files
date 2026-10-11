@@ -3,16 +3,13 @@
 # Upstream's docker-compose.yaml publishes all services on every interface,
 # including the sandbox runner (port 2000, which would let anyone skip the
 # API), Redis (password "localdev") and MinIO (minioadmin/minioadmin).
-# Docker-published ports also bypass firewalld, so a firewall rule does not
-# hide them. Use this on any machine reachable from a network:
+# Docker-published ports also bypass host firewalls such as firewalld, so a
+# firewall rule does not hide them. Listed in COMPOSE_FILE for both paths in
+# README.md.
 #
-#   docker compose -f docker-compose.yaml -f docker-compose.images.yml \
-#     -f docker-compose.server.yml up -d
-#
-# Reach the API through an SSH tunnel (see README.md). To expose the API
-# directly instead, set CODEAPI_API_BIND=0.0.0.0, but only after turning on
-# authentication (LOCAL_MODE=false); with the defaults anyone who can reach
-# port 3112 can run code on this server.
+# CODEAPI_API_BIND=0.0.0.0 would publish the API on all interfaces. Only do
+# that after turning on authentication (LOCAL_MODE=false); with the defaults
+# anyone who can reach port 3112 can run code on this machine.
 #
 # Needs Docker Compose 2.24.4 or later for `!override`.
 

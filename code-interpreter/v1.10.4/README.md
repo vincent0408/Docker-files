@@ -6,65 +6,176 @@ publishes to GHCR, for release
 [v1.10.4](https://github.com/LibreChat-AI/code-interpreter/releases/tag/v1.10.4)
 (commit `a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24`).
 
-| File | Image | Compose service |
-|---|---|---|
-| `code-interpreter-api.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-api` | `api` |
-| `code-interpreter-worker.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-worker` | `service-worker` |
-| `code-interpreter-file-server.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-file-server` | `file_server` |
-| `code-interpreter-egress-gateway.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-egress-gateway` | `egress_gateway` |
-| `code-interpreter-tool-call-server.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-tool-call-server` | `tool_call_server` |
-| `code-interpreter-sandbox-runner.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-sandbox-runner` | `sandbox-runner` (`KVM_ENABLED=true`) |
-| `code-interpreter-sandbox-runner-direct.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct` | `sandbox-runner` (`KVM_ENABLED=false`) |
+| File | Image | Compose service | Used by |
+|---|---|---|---|
+| `code-interpreter-api.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-api` | `api` | both paths |
+| `code-interpreter-worker.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-worker` | `service-worker` | both paths |
+| `code-interpreter-file-server.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-file-server` | `file_server` | both paths |
+| `code-interpreter-egress-gateway.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-egress-gateway` | `egress_gateway` | both paths |
+| `code-interpreter-tool-call-server.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-tool-call-server` | `tool_call_server` | both paths |
+| `code-interpreter-sandbox-runner-direct.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct` | `sandbox-runner` | Path A (no-KVM) |
+| `code-interpreter-sandbox-runner.tar.gz` | `ghcr.io/librechat-ai/code-interpreter-sandbox-runner` | `sandbox-runner` | Path B (KVM) |
 
 Every image is tagged `sha-a62d69e05a4541ac9a20722ac7ff3fcfecb6ed24`.
 
 The code interpreter is not one container: it is a Compose stack of these
-seven services plus Redis and MinIO (S3 storage). LibreChat sends code to the
-`api` service on port 3112; the worker runs it in the sandbox runner.
+services plus Redis and MinIO (S3 storage), started from the original repo's
+`docker-compose.yaml` with the override files in this folder. LibreChat sends
+code to the `api` service on port 3112; the worker runs it in the sandbox
+runner.
 
-## Requirements
+## Two paths on Windows
 
-- Linux on x86_64 (the images are `linux/amd64` only).
-- Docker with Docker Compose 2.24.4 or later (`docker compose version`).
-- Git and [Git LFS](https://git-lfs.com) (`git lfs version`).
-- For the default sandbox: hardware virtualization exposed as `/dev/kvm`
-  (`ls -l /dev/kvm`). Bare metal, or a VM with nested virtualization.
-  On Windows 11, WSL2 can provide it: see [Windows (WSL2)](#windows-wsl2).
-  Without it, use the no-KVM mode in step 5, or on Windows
-  [Windows (WSL2) without KVM](#windows-wsl2-without-kvm-testing).
-- Running it on a server for a LibreChat elsewhere: see
-  [RHEL server + LibreChat on your own computer](#rhel-server--librechat-on-your-own-computer).
-- About 7 GB of disk for the archives plus the loaded images.
+Both run in WSL2 (Ubuntu) on Windows and give LibreChat the same API. They
+differ in how the sandbox isolates code.
 
-## Windows (WSL2)
+| | **Path A: no-KVM** (start here) | **Path B: KVM** (later) |
+|---|---|---|
+| Sandbox | NsJail directly in a container | NsJail inside a libkrun microVM with its own kernel |
+| Isolation | Weaker: shares the Linux kernel; no per-run memory or process limits. **Your own code only.** | Strong: the design upstream calls reasonably secure |
+| Windows | Windows 10 or 11 | **Windows 11** (nested virtualization in WSL2) |
+| Docker | Docker Desktop (WSL2 backend) | Docker Engine installed **inside Ubuntu** |
+| Runner image | `sandbox-runner-direct` (359 MB) | `sandbox-runner` (1.35 GB) |
+| Language runtimes | Built once with `build-packages.sh` | Already in the image |
+| Compose files | `images`, `direct`, `server` | `images`, `server` |
+| Tested | Same files and settings run end to end on Linux; Windows-side settings not tested on Windows hardware | Not tested (no `/dev/kvm` on the test machine) |
+
+Either way you need: Git, Git LFS, `openssl` and `curl` in Ubuntu; Docker
+Compose 2.24.4 or later (`docker compose version`); about 7 GB of disk; 8 GB+
+of RAM for WSL2.
+
+Work in your Ubuntu home folder (`~/`) for both paths, never under `/mnt/c`:
+the Windows drive is slow from WSL, and cloning with Git for Windows can turn
+the `.sh` scripts' line endings into CRLF, which breaks them.
+
+---
+
+## Path A: no-KVM (Docker Desktop)
+
+### Settings to make
+
+| Where | Setting | Why |
+|---|---|---|
+| `C:\Users\<you>\.wslconfig` | `[wsl2]` then `memory=8GB` (more if you have it) | The stack plus the package build need a few GB; WSL2 defaults to half your RAM. Skip if that is already 8 GB or more. `nestedVirtualization` is **not** needed. |
+| Docker Desktop → Settings → General | "Use the WSL 2 based engine": on | Runs containers in WSL2. |
+| Docker Desktop → Settings → Resources → WSL integration | On for your Ubuntu distro | Makes `docker` work inside Ubuntu. |
+| Docker Desktop → Settings → General | "Start Docker Desktop when you sign in" (optional) | Docker must be running before the stack starts. |
+| `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN=<openssl rand -hex 32>` | Required by the API. |
+| `code-interpreter/.env` | `COMPOSE_PROJECT_NAME=code-interpreter` | Fixes the network name LibreChat joins (`code-interpreter_default`). |
+| `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml` | Plain `docker compose up -d`, `ps`, `logs` and `down` then use all four files. |
+| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | See [A6](#a6-point-librechat-at-it). |
+
+After changing `.wslconfig`, run `wsl --shutdown` in PowerShell and restart
+Docker Desktop.
+
+### A1. Prepare Ubuntu
+
+If you don't have WSL2 and Ubuntu yet, in an administrator PowerShell:
+`wsl --install -d Ubuntu`. Then in the Ubuntu terminal:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git git-lfs openssl curl
+docker compose version     # needs 2.24.4 or later; comes with Docker Desktop
+cd ~
+```
+
+### A2. Download and load the images
+
+Path A does not use the 1.35 GB KVM runner image, so skip it:
+
+```bash
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
+cd Docker-files && git lfs pull --exclude "*sandbox-runner.tar.gz"
+cd code-interpreter/v1.10.4
+grep -v ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
+for f in *.tar.gz; do
+  [ "$f" = code-interpreter-sandbox-runner.tar.gz ] || docker load -i "$f"
+done
+cd ~
+```
+
+The skipped file stays behind as a small LFS pointer, which is why both
+commands leave it out. Each load prints
+`Loaded image: ghcr.io/librechat-ai/<name>:sha-a62d69e…`.
+
+### A3. Get the Compose files and set `.env`
+
+```bash
+git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,direct,server}.yml code-interpreter/
+cd code-interpreter
+cp .env.example .env
+sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
+cat >> .env <<'EOF'
+
+# --- Path A: no-KVM ---
+COMPOSE_PROJECT_NAME=code-interpreter
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml
+EOF
+```
+
+What each file does: [Compose files](#compose-files).
+
+### A4. Build the language runtimes
+
+The no-KVM runner reads Python, Node and Bun from `./data/pkgs`; they are not
+in its image. `build-packages.sh` builds them in a temporary container, so it
+needs only Docker and internet. For a first test, Python and bash only:
+
+```bash
+SKIP_PYTHON_PACKAGES=1 SKIP_JS_PACKAGES=1 SKIP_NODE=1 SKIP_BUN=1 ./build-packages.sh
+```
+
+Later, run `./build-packages.sh` without the `SKIP_` variables for Python's
+data-science packages, Node and Bun (much slower), then
+`docker compose restart sandbox-runner`. The sandbox only offers the
+languages it finds in `./data/pkgs` when it starts.
+
+### A5. Start and check
+
+```bash
+docker compose up -d
+docker compose ps              # sandbox-runner "(healthy)", all services Up
+```
+
+Then run the [checks](#check-it-works).
+
+### A6. Point LibreChat at it
+
+**LibreChat running directly** (`npm run backend`, on Windows or in WSL): in
+LibreChat's `.env`:
+
+```bash
+LIBRECHAT_CODE_BASEURL=http://localhost:3112/v1
+```
+
+Docker Desktop forwards the `127.0.0.1` ports to Windows' `localhost`.
+
+**LibreChat running in Docker Desktop**: join it to the code interpreter's
+network, as in [LibreChat in Docker](#librechat-in-docker).
+
+---
+
+## Path B: KVM (Windows 11, Docker Engine in Ubuntu)
 
 Windows itself has no `/dev/kvm`; it only exists on Linux. WSL2 runs a real
 Linux kernel, and on Windows 11 it can pass hardware virtualization through
 to that kernel (nested virtualization), which creates `/dev/kvm`. The sandbox
-then starts its microVM inside WSL2.
+then starts its microVM inside WSL2. These steps were not tested on Windows
+hardware; the `/dev/kvm` checks tell you at each stage whether it worked.
 
-> These steps follow Microsoft's and Docker's documented setup but were not
-> tested on Windows hardware for this repo. The `/dev/kvm` checks below tell
-> you at each stage whether it worked.
+### Settings to make
 
-### What you need
-
-| What | Size / cost | Notes |
+| Where | Setting | Why |
 |---|---|---|
-| Windows 11 | — | WSL2 nested virtualization is Windows 11 only. On Windows 10, use a [Hyper-V VM](#alternative-a-hyper-v-linux-vm) or no-KVM mode. |
-| CPU virtualization on in BIOS/UEFI | — | Intel VT-x or AMD-V/SVM. Task Manager → Performance → CPU must say "Virtualization: Enabled". |
-| WSL2 + Ubuntu | ~1–2 GB | `wsl --install` downloads both. |
-| Docker Engine inside Ubuntu | ~500 MB | Not Docker Desktop: see step W4. |
-| `git`, `git-lfs`, `openssl`, `curl` in Ubuntu | small | `apt` packages. |
-| This repo's archives | ~2.2 GB | Skip the 359 MB `sandbox-runner-direct` file; KVM mode does not use it. |
-| `code-interpreter` repo at `v1.10.4` | small | Compose files and configuration. |
-| `redis:7-alpine`, `cgr.dev/chainguard/minio` | ~150 MB | Pulled automatically on first start. |
-| RAM | 8 GB+ recommended | The sandbox microVM is configured with 2 GB and 2 vCPUs (`LAUNCHER_RAM_MIB`, `LAUNCHER_VCPUS` in `docker-compose.yaml`), on top of the other services. WSL2 gets half of your RAM by default. |
+| BIOS/UEFI | Intel VT-x or AMD-V/SVM on | Task Manager → Performance → CPU must say "Virtualization: Enabled". |
+| `C:\Users\<you>\.wslconfig` | `[wsl2]`, `nestedVirtualization=true`, and `memory=8GB` or more | Creates `/dev/kvm` in WSL2. The sandbox microVM is configured with 2 GB and 2 vCPUs (`LAUNCHER_RAM_MIB`, `LAUNCHER_VCPUS` in `docker-compose.yaml`) on top of the other services. |
+| Docker Desktop | Quit it, or Settings → Resources → WSL integration **off** for Ubuntu | Its hidden VM does not reliably pass `/dev/kvm` to containers; Ubuntu's own Docker Engine must own the `docker` command. |
+| `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN`, `COMPOSE_PROJECT_NAME=code-interpreter` | As in Path A. |
+| `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml` | Same as Path A **without** `docker-compose.direct.yml`. |
+| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | See [B7](#b7-point-librechat-at-it). |
 
-KVM mode does **not** need `build-packages.sh`: Python, Node and Bun are
-already inside the `code-interpreter-sandbox-runner` image.
-
-### W1. Install WSL2 and Ubuntu (PowerShell as administrator)
+### B1. Install WSL2 and Ubuntu (PowerShell as administrator)
 
 ```powershell
 wsl --install -d Ubuntu
@@ -74,15 +185,14 @@ wsl --version
 
 Restart Windows if asked, then open Ubuntu once to create your Linux user.
 
-### W2. Turn on nested virtualization
+### B2. Turn on nested virtualization
 
 Create or edit `C:\Users\<you>\.wslconfig`:
 
 ```ini
 [wsl2]
 nestedVirtualization=true
-# Optional: give WSL more memory than the default half of your RAM.
-# memory=12GB
+memory=8GB
 ```
 
 Then restart WSL from PowerShell:
@@ -91,7 +201,7 @@ Then restart WSL from PowerShell:
 wsl --shutdown
 ```
 
-### W3. Check for `/dev/kvm` (Ubuntu terminal)
+### B3. Check for `/dev/kvm` (Ubuntu terminal)
 
 ```bash
 ls -l /dev/kvm
@@ -105,8 +215,8 @@ sudo modprobe kvm_amd     # AMD
 ```
 
 Still missing means virtualization is not reaching WSL: recheck the BIOS
-setting, that you are on Windows 11, and that `wsl --update` ran. Then use an
-[alternative](#alternatives) instead.
+setting, that you are on Windows 11, and that `wsl --update` ran. Until it
+appears, stay on Path A.
 
 Give your user access to it:
 
@@ -114,15 +224,10 @@ Give your user access to it:
 sudo usermod -aG kvm $USER
 ```
 
-### W4. Install Docker Engine inside Ubuntu
+### B4. Install Docker Engine inside Ubuntu
 
-Docker Desktop runs containers in its own hidden VM, which does not reliably
-pass `/dev/kvm` through to containers. Docker Engine installed directly in
-Ubuntu uses the same kernel you just checked.
-
-If Docker Desktop is installed, quit it (tray icon), or open its Settings →
-Resources → WSL integration and turn integration off for Ubuntu, so the
-`docker` command in Ubuntu is not taken over. Then, in Ubuntu:
+Quit Docker Desktop (tray icon), or turn its WSL integration off for Ubuntu,
+so it does not take over the `docker` command. Then, in Ubuntu:
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
@@ -137,158 +242,144 @@ use KVM:
 ```bash
 docker compose version          # needs 2.24.4 or later
 docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
-```
-
-The last command must print the device. If it does, continue with step 1
-below **inside Ubuntu**, from your home folder:
-
-```bash
 cd ~
 ```
 
-Keep the repos under `~/`, not `/mnt/c/...`: the Windows drive is slow from
-WSL and breaks Linux file permissions, and cloning with Git for Windows can
-convert the `.sh` scripts to CRLF line endings. In step 1, use the
-`--exclude "*sandbox-runner-direct*"` variant to skip the file KVM mode does
-not need, and the matching commands in step 2. In step 5 use the "With
-`/dev/kvm`" commands. From Windows, the API is reachable at
-`http://localhost:3112`.
+The `docker run` line must print the device. If it does not, stay on Path A.
 
-### Alternatives
+### B5. Download, load and set up
 
-#### Alternative A: Hyper-V Linux VM
-
-Works on Windows 10/11 Pro, Enterprise or Education (Intel CPUs on Windows
-10; AMD needs Windows 11). Create an Ubuntu VM in Hyper-V Manager, shut it
-down, enable nested virtualization from an administrator PowerShell, then
-start it and follow this README inside the VM as on any Linux host:
-
-```powershell
-Set-VMProcessor -VMName <vm-name> -ExposeVirtualizationExtensions $true
-```
-
-#### Alternative B: no-KVM mode
-
-If neither works, use [no-KVM mode on Windows](#windows-wsl2-without-kvm-testing).
-It runs on Docker Desktop but with weaker isolation, for testing only.
-
-## Windows (WSL2) without KVM (testing)
-
-The quickest way to try the code interpreter on Windows: Docker Desktop with
-its WSL2 backend, no `/dev/kvm` needed. Sandboxed code shares the kernel of
-Docker Desktop's Linux VM and has no per-run memory or process limits, so use
-it only for your own code.
-
-> Tested on Linux with the same files and settings (stack start, code
-> execution, a LibreChat-style container on the shared network). The
-> Windows-side settings (Docker Desktop, `.wslconfig`, Windows `localhost`)
-> were not tested on Windows hardware.
-
-### Settings to make
-
-| Where | Setting | Why |
-|---|---|---|
-| `C:\Users\<you>\.wslconfig` | `[wsl2]` then `memory=8GB` (more if you have it) | The stack plus the package build need a few GB; WSL2 defaults to half your RAM. Not needed if that is already 8 GB or more. `nestedVirtualization` is **not** needed. |
-| Docker Desktop → Settings → General | "Use the WSL 2 based engine": on | Runs containers in WSL2. |
-| Docker Desktop → Settings → Resources → WSL integration | On for your Ubuntu distro | Makes `docker` work inside Ubuntu. |
-| Docker Desktop → Settings → General | "Start Docker Desktop when you sign in" (optional) | Docker must be running before the stack starts. |
-| `code-interpreter/.env` | `CODEAPI_BRIDGE_TOKEN=<openssl rand -hex 32>` | Required by the API. |
-| `code-interpreter/.env` | `COMPOSE_PROJECT_NAME=code-interpreter` | Fixes the network name LibreChat joins (`code-interpreter_default`). |
-| `code-interpreter/.env` | `COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml` | Plain `docker compose up -d`, `ps`, `logs` and `down` then use all four files. |
-| LibreChat `.env` | `LIBRECHAT_CODE_BASEURL=…` | See [N6](#n6-point-librechat-at-it). |
-
-After changing `.wslconfig`, run `wsl --shutdown` in PowerShell and restart
-Docker Desktop.
-
-### N1. Prepare Ubuntu (Ubuntu terminal)
-
-If you don't have WSL2 and Ubuntu yet: `wsl --install -d Ubuntu` in an
-administrator PowerShell. Then in Ubuntu:
+This Docker Engine has its own image store, separate from Docker Desktop's,
+so the images are loaded here even if you already did Path A. Path B does not
+use the direct runner, so skip it:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y git git-lfs openssl curl
-docker compose version     # needs 2.24.4 or later; comes with Docker Desktop
-cd ~                       # work in your Linux home, not /mnt/c
-```
-
-Keep everything under `~/`: `/mnt/c` is slow from WSL, and Git for Windows
-can turn the `.sh` scripts' line endings into CRLF, which breaks them.
-
-### N2. Download and load the images
-
-No-KVM mode does not use the 1.35 GB KVM runner image, so skip it:
-
-```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
-cd Docker-files && git lfs pull --exclude "*sandbox-runner.tar.gz"
+[ -d Docker-files ] || GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
+cd Docker-files && git pull && git lfs pull --exclude "*sandbox-runner-direct*"
 cd code-interpreter/v1.10.4
-grep -v ' code-interpreter-sandbox-runner.tar.gz' SHA256SUMS | sha256sum -c
+grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c
 for f in *.tar.gz; do
-  [ "$f" = code-interpreter-sandbox-runner.tar.gz ] || docker load -i "$f"
+  [ "$f" = code-interpreter-sandbox-runner-direct.tar.gz ] || docker load -i "$f"
 done
 cd ~
 ```
 
-### N3. Get the Compose files and set `.env`
+If you already have `~/Docker-files` from Path A, `git lfs pull` now also
+downloads the KVM runner; the direct runner you loaded earlier is already on
+disk and is simply not loaded here.
+
+Then the Compose files and `.env`. If `~/code-interpreter` exists from Path A,
+skip the clone and the `.env` creation and only change `COMPOSE_FILE` (see
+[Switching from Path A](#switching-from-path-a-to-path-b)):
 
 ```bash
 git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
-cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,direct,server}.yml code-interpreter/
+cp Docker-files/code-interpreter/v1.10.4/docker-compose.{images,server}.yml code-interpreter/
 cd code-interpreter
 cp .env.example .env
 sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
 cat >> .env <<'EOF'
 
-# --- Windows / WSL2, no-KVM mode ---
+# --- Path B: KVM ---
 COMPOSE_PROJECT_NAME=code-interpreter
-COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.direct.yml:docker-compose.server.yml
+COMPOSE_FILE=docker-compose.yaml:docker-compose.images.yml:docker-compose.server.yml
 EOF
 ```
 
-The four Compose files: upstream's base file; `images` (use the loaded
-images); `direct` (no-KVM runner, explained in
-[step 5](#without-devkvm-no-kvm-mode-for-testing)); `server` (every port on
-`127.0.0.1` only, so the sandbox runner, Redis and MinIO are not reachable
-from your network, and the API answers to `code-interpreter-api` for
-LibreChat).
+No `build-packages.sh`: the runtimes are inside the KVM runner image.
 
-### N4. Build the language runtimes
-
-```bash
-SKIP_PYTHON_PACKAGES=1 SKIP_JS_PACKAGES=1 SKIP_NODE=1 SKIP_BUN=1 ./build-packages.sh
-```
-
-This builds Python and bash only, for a first test. Later, run
-`./build-packages.sh` without the `SKIP_` variables for Python's
-data-science packages, Node and Bun (much slower), then
-`docker compose restart sandbox-runner`.
-
-### N5. Start and check
+### B6. Start and check
 
 ```bash
 docker compose up -d
 docker compose ps              # sandbox-runner "(healthy)", all services Up
-curl -s localhost:3112/v1/exec -H 'Content-Type: application/json' \
-  -d '{"lang":"py","code":"print(6*7)"}'
 ```
 
-The last command should return `"stdout":"42\n"` and `"code":0`. If `code`
-is `255`, see `docker compose logs sandbox-runner`.
+The KVM runner can take a minute or two to report healthy on first start;
+`service-worker` waits for it. Then run the [checks](#check-it-works).
 
-### N6. Point LibreChat at it
+### B7. Point LibreChat at it
 
-**LibreChat running directly on Windows or in WSL** (`npm run backend`): in
-LibreChat's `.env`:
+**LibreChat running directly** (`npm run backend`, on Windows or in WSL):
 
 ```bash
 LIBRECHAT_CODE_BASEURL=http://localhost:3112/v1
 ```
 
-Docker Desktop forwards the `127.0.0.1` ports to Windows' `localhost`.
+From Windows, WSL2 forwards `localhost` to ports listening inside it.
 
-**LibreChat running in Docker** (its `docker compose`): join it to the code
-interpreter's network. Create `docker-compose.override.yml` in the LibreChat
-folder (or add to the one you have):
+**LibreChat running in Docker**: run it on the same Docker Engine inside
+Ubuntu (not Docker Desktop, which is a separate engine and network), and join
+it to the code interpreter's network as in
+[LibreChat in Docker](#librechat-in-docker).
+
+### Switching from Path A to Path B
+
+1. Stop Path A while Docker Desktop is still running:
+   `cd ~/code-interpreter && docker compose down -v`.
+2. Follow B1–B5. In `~/code-interpreter/.env`, remove
+   `docker-compose.direct.yml` from `COMPOSE_FILE`:
+
+   ```bash
+   sed -i 's#:docker-compose.direct.yml##' .env
+   grep ^COMPOSE_FILE .env
+   ```
+
+3. Start with B6. `./data/pkgs` is no longer used; delete it if you want the
+   space back.
+
+To go back to Path A, add `docker-compose.direct.yml` back to `COMPOSE_FILE`
+and use Docker Desktop again (its own image store still has the Path A
+images).
+
+---
+
+## Shared reference
+
+### Compose files
+
+All start from the original repo's `docker-compose.yaml` at `v1.10.4`, which
+must match these images.
+
+| File | Path | What it does |
+|---|---|---|
+| `docker-compose.images.yml` | A and B | Uses the loaded images instead of building (`pull_policy: never`, so a missing image fails fast). Replaces `quay.io/minio/minio`, which no longer allows anonymous pulls, with `cgr.dev/chainguard/minio`. |
+| `docker-compose.direct.yml` | A only | Runs `sandbox-runner-direct` without KVM: `/dev/null` in place of `/dev/kvm`; the capabilities and seccomp profile NsJail needs (from upstream's `docker-compose.mac.yml`), without which it loops on `unshare: Operation not permitted`; a health check that works after the runner switches into its sandbox filesystem; `SANDBOX_PIPE_ADDON`, which the published image is missing (`Cannot find module …anonymous-pipes.node`); and `SANDBOX_USE_CGROUPV2=false` (`Couldn't initialize cgroup 2 user namespace`), which turns off per-run memory and process limits. |
+| `docker-compose.server.yml` | A and B | Publishes every port on `127.0.0.1` only. Upstream publishes all of them on every interface, including the sandbox runner (which would let anyone skip the API), Redis (password `localdev`) and MinIO (`minioadmin`/`minioadmin`). Also names the API `code-interpreter-api` for a LibreChat container on the same network. |
+
+Setting `KVM_ENABLED=false` in upstream's `.env` alone does not give a working
+no-KVM stack: the runner cannot be created without `/dev/kvm`, and with that
+fixed it loops on `unshare: Operation not permitted`. That is why Path A uses
+`docker-compose.direct.yml`.
+
+### Check it works
+
+```bash
+curl localhost:3112/v1/health          # OK
+curl localhost:13000/ready             # {"status":"ready","checks":{"redis":"ok","s3":"ok"}}
+curl localhost:3190/health             # OK
+
+curl -s localhost:3112/v1/exec \
+  -H 'Content-Type: application/json' \
+  -d '{"lang":"py","code":"print(6*7)\nopen(\"/mnt/data/hello.txt\",\"w\").write(\"hi\")"}'
+```
+
+A working stack answers with `"stdout":"42\n"`, `"code":0` and a `files`
+entry for `hello.txt`. To download that file, use the `session_id` and the
+file's `id` from the response:
+
+```bash
+curl "localhost:3112/v1/download/<session_id>/<file id>?kind=user"   # hi
+```
+
+If `code` is `255` with empty output, the sandbox failed to start the run;
+the reason is in `docker compose logs sandbox-runner`.
+
+### LibreChat in Docker
+
+Create `docker-compose.override.yml` in the LibreChat folder (or add to the
+one you have), so LibreChat's `api` service also joins the code
+interpreter's network:
 
 ```yaml
 services:
@@ -311,392 +402,37 @@ LIBRECHAT_CODE_BASEURL=http://code-interpreter-api:3112/v1
 
 Use `code-interpreter-api`, not `api`: on the shared network `api` matches
 both LibreChat's and the code interpreter's container. Start the code
-interpreter first (the network must exist), then
-`docker compose up -d` in LibreChat, and enable the code interpreter on an
-agent.
+interpreter first (the network must exist), then `docker compose up -d` in
+LibreChat, and enable the code interpreter on an agent. Both must run on the
+same Docker engine.
+
+### Security
+
+- The default `LOCAL_MODE=true` means the API accepts requests without any
+  key and uses development secrets. Keep it on `127.0.0.1` (the `server`
+  file does this) and don't expose port 3112 to other machines.
+- Path A runs untrusted code without a separate kernel or resource limits.
+  Use it only for code you'd run on your own machine anyway.
 
 ### Day-to-day
 
-From `~/code-interpreter`: `docker compose up -d` to start,
-`docker compose down` to stop (`down -v` also deletes stored files),
-`docker compose logs -f sandbox-runner service-worker` when a run fails.
+From `~/code-interpreter` (with `COMPOSE_FILE` in `.env`, no `-f` flags
+needed):
 
-## RHEL server + LibreChat on your own computer
-
-Run the code interpreter on a RHEL 8/9 server and keep LibreChat on your
-laptop or desktop. LibreChat reaches the server's API through an SSH tunnel,
-so nothing but SSH is exposed: with the default `LOCAL_MODE=true` the API has
-no authentication, and anyone who can reach port 3112 could run code on the
-server.
-
-```text
-your computer                              RHEL server
-LibreChat ──► localhost:3112 ══ SSH ══►  127.0.0.1:3112  code-interpreter api
-                                          (every other port: 127.0.0.1 only)
-```
-
-> The RHEL-specific commands (dnf, firewalld, SELinux) follow Red Hat's and
-> Docker's documentation but were not run on RHEL for this repo. The
-> server override, the SSH tunnel and the container route through
-> `host.docker.internal` were tested on Linux.
-
-### What you need
-
-| What | Notes |
+| Task | Command |
 |---|---|
-| RHEL 8 or 9, x86_64 | 4+ vCPUs and 8 GB+ RAM recommended; the sandbox microVM alone is configured with 2 vCPUs and 2 GB. ~10 GB free disk. |
-| `/dev/kvm` on the server | Bare metal, or a VM whose hypervisor exposes nested virtualization (VMware: "Expose hardware assisted virtualization to the guest OS"; KVM/libvirt hosts: nested enabled; cloud: an instance type that supports nested virtualization or bare metal). Without it, the no-KVM mode in step 5 works, for testing only. |
-| Docker CE + Compose plugin | From Docker's RHEL repository (R2). Not Podman. |
-| `git`, `git-lfs`, `openssl`, `curl` | `dnf` packages. |
-| This repo's archives (~1.9 GB without the direct runner) and the `code-interpreter` repo at `v1.10.4` | As in steps 1–3. |
-| `redis:7-alpine`, `cgr.dev/chainguard/minio` | Pulled on first start. No internet on the server? See R6. |
-| SSH access from your computer to the server | Windows 10/11, macOS and Linux all include an `ssh` client. |
+| Start | `docker compose up -d` |
+| Status | `docker compose ps` |
+| Logs when a run fails | `docker compose logs -f sandbox-runner service-worker` |
+| Stop | `docker compose down` |
+| Stop and delete stored files | `docker compose down -v` |
 
-KVM mode needs no `build-packages.sh`; the runtimes are in the image.
+Only the sandbox runner has a restart policy upstream; after a reboot (or
+after Docker Desktop restarts), run `docker compose up -d` again.
 
-### R1. Check for KVM (on the server)
+### Ports
 
-```bash
-grep -cE 'vmx|svm' /proc/cpuinfo   # more than 0: the CPU exposes virtualization
-ls -l /dev/kvm
-```
-
-If `/dev/kvm` is missing but the first command prints a number above 0, load
-the module (`sudo modprobe kvm_intel` or `sudo modprobe kvm_amd`) and check
-again. If the first command prints `0`, the server (or its hypervisor) does
-not expose virtualization: fix that, or use no-KVM mode.
-
-### R2. Install Docker CE and tools
-
-RHEL ships Podman by default, and it conflicts with Docker CE's packages, so
-remove it first (skip this if other things on the server use Podman, and
-ask whoever runs them):
-
-```bash
-sudo dnf remove -y podman runc buildah
-sudo dnf install -y dnf-plugins-core
-sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
-sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo systemctl enable --now docker
-sudo dnf install -y git git-lfs openssl curl
-sudo usermod -aG docker,kvm $USER
-```
-
-Log out and back in for the groups, then check:
-
-```bash
-docker compose version          # needs 2.24.4 or later
-docker run --rm --device /dev/kvm alpine ls -l /dev/kvm
-```
-
-If `git-lfs` is not found, enable the AppStream repository
-(`sudo subscription-manager repos --list-enabled`), or skip it and copy the
-archives over from your computer instead:
-`scp code-interpreter/v1.10.4/*.tar.gz code-interpreter/v1.10.4/SHA256SUMS <user>@<server>:~/Docker-files/code-interpreter/v1.10.4/`.
-
-### R3. Set up the code interpreter (on the server)
-
-Follow steps 1–4 above in your home folder (use the `--exclude` variant to
-skip the direct runner). Then also copy the server override:
-
-```bash
-cp ../Docker-files/code-interpreter/v1.10.4/docker-compose.server.yml .
-```
-
-`docker-compose.server.yml` publishes every port on `127.0.0.1` only. The
-upstream Compose file publishes all of them on every interface, including
-the sandbox runner (which would let anyone skip the API), Redis (password
-`localdev`) and MinIO (`minioadmin`/`minioadmin`). Docker's published ports
-also bypass firewalld, so a firewall rule alone does not protect them.
-
-Start it with three files:
-
-```bash
-docker compose -f docker-compose.yaml -f docker-compose.images.yml \
-  -f docker-compose.server.yml up -d
-docker compose -f docker-compose.yaml -f docker-compose.images.yml \
-  -f docker-compose.server.yml ps
-curl localhost:3112/v1/health     # OK
-```
-
-Run the step 6 checks on the server too.
-
-After a reboot, Docker itself starts again (`systemctl enable` above), but
-upstream's Compose file only gives the sandbox runner a restart policy. Run
-the same `up -d` command after a reboot, or add `restart: unless-stopped` to
-each service in `docker-compose.server.yml` to bring them all back
-automatically.
-
-SELinux: Docker CE does not turn on SELinux labeling for containers by
-default, so the `/dev/kvm` device and bind mounts work as is. If you
-enabled `"selinux-enabled": true` in `/etc/docker/daemon.json` and the
-runner fails, check `sudo ausearch -m avc -ts recent`.
-
-firewalld needs no change: only SSH (open by default) is used.
-
-### R4. Open the tunnel (on your computer)
-
-```bash
-ssh -N -L 3112:127.0.0.1:3112 <user>@<server>
-```
-
-Leave it running. It forwards `localhost:3112` on your computer to the API on
-the server. Check from another terminal: `curl localhost:3112/v1/health`.
-Add `-o ServerAliveInterval=30` to keep it from idling out, or use `autossh`
-to reconnect it automatically.
-
-If LibreChat runs in Docker on a **Linux** computer, a container cannot reach
-your computer's `127.0.0.1`. Make the tunnel listen on Docker's bridge
-address as well:
-
-```bash
-ssh -N -L 172.17.0.1:3112:127.0.0.1:3112 <user>@<server>
-```
-
-On Docker Desktop (Windows, macOS) the plain command works.
-
-### R5. Point LibreChat at it (on your computer)
-
-In LibreChat's `.env`:
-
-| LibreChat runs | Setting |
-|---|---|
-| Directly (`npm run backend`) | `LIBRECHAT_CODE_BASEURL=http://localhost:3112/v1` |
-| In Docker | `LIBRECHAT_CODE_BASEURL=http://host.docker.internal:3112/v1` |
-
-For Docker, the LibreChat service needs `host.docker.internal` mapped; if its
-Compose file does not already have it, add to the `api` service:
-
-```yaml
-extra_hosts:
-  - "host.docker.internal:host-gateway"
-```
-
-Restart LibreChat and enable the code interpreter on an agent. Its runs now
-execute on the server; the tunnel must be open whenever you use it.
-
-### R6. Server without internet access
-
-Everything the server needs can be carried over as files. On a computer with
-internet and Docker:
-
-```bash
-docker pull redis:7-alpine
-docker pull cgr.dev/chainguard/minio:latest
-docker save redis:7-alpine cgr.dev/chainguard/minio:latest | gzip > deps.tar.gz
-```
-
-Copy `deps.tar.gz`, this folder's archives and a checkout of the
-`code-interpreter` repo (`git clone --branch v1.10.4 --depth 1 …`, then
-`scp -r`) to the server, and run `docker load -i deps.tar.gz` there along with
-step 2. Docker CE itself can be installed from downloaded RPMs (Docker's
-"Install from a package" instructions).
-
-### Exposing the API without a tunnel
-
-Only do this with authentication on: set `LOCAL_MODE=false` and configure an
-auth provider (the original repo's `scripts/setup-local-auth-env.js` writes
-LibreChat JWT settings into both `.env` files), put TLS in front of it (a
-reverse proxy), and then set `CODEAPI_API_BIND=0.0.0.0` before starting so
-the server override publishes port 3112 on all interfaces. This path was not
-tested for this repo.
-
-## 1. Download the archives
-
-The `.tar.gz` files are stored with Git LFS, so a plain download gives you
-small pointer files instead. Clone with LFS installed:
-
-```bash
-git lfs install
-git clone https://github.com/vincent0408/Docker-files.git
-cd Docker-files/code-interpreter/v1.10.4
-```
-
-If you cloned without LFS, run `git lfs pull` in the repo. To fetch only
-some images (for example everything except the 359 MB direct runner):
-
-```bash
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
-cd Docker-files
-git lfs pull --exclude "*sandbox-runner-direct*"
-cd code-interpreter/v1.10.4
-```
-
-## 2. Verify and load the images
-
-There is nothing to extract by hand: `docker load` reads the gzipped archives
-directly.
-
-```bash
-sha256sum -c SHA256SUMS
-for f in *.tar.gz; do docker load -i "$f"; done
-docker images 'ghcr.io/librechat-ai/*'
-```
-
-Each load prints `Loaded image: ghcr.io/librechat-ai/<name>:sha-a62d69e…`.
-
-If you skipped the direct runner with `--exclude` in step 1, its file is
-still there as a small LFS pointer, so leave it out of both commands:
-
-```bash
-grep -v sandbox-runner-direct SHA256SUMS | sha256sum -c
-for f in *.tar.gz; do
-  [ "$f" = code-interpreter-sandbox-runner-direct.tar.gz ] || docker load -i "$f"
-done
-```
-
-## 3. Get the matching Compose configuration
-
-The images expect the Compose files from the same commit, so check out the
-`v1.10.4` tag of the original repo next to this one and copy the override from
-this folder into it:
-
-```bash
-cd ../../..   # back to the folder that holds Docker-files
-git clone --branch v1.10.4 --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
-cp Docker-files/code-interpreter/v1.10.4/docker-compose.images.yml code-interpreter/
-cd code-interpreter
-```
-
-`docker-compose.images.yml` switches every service from building to the
-loaded images (with `pull_policy: never`, so a missing image fails fast
-instead of downloading). It also replaces `quay.io/minio/minio`, which no
-longer allows anonymous pulls, with `cgr.dev/chainguard/minio`.
-
-## 4. Configure
-
-```bash
-cp .env.example .env
-sed -i "s/^CODEAPI_BRIDGE_TOKEN=.*/CODEAPI_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
-```
-
-The Compose defaults run in `LOCAL_MODE=true`: the API accepts requests
-without an API key and uses development secrets. That is fine on your own
-machine. Before exposing it to anyone else, set `LOCAL_MODE=false`, real
-secrets (`CODEAPI_INTERNAL_SERVICE_TOKEN`, `CODEAPI_EGRESS_GRANT_SECRET`,
-the execution manifest key pair) and an auth provider; the original repo's
-`scripts/setup-local-auth-env.js` wires LibreChat JWT auth into both `.env`
-files.
-
-## 5. Start the stack
-
-With `/dev/kvm` (default, microVM sandbox):
-
-```bash
-docker compose -f docker-compose.yaml -f docker-compose.images.yml up -d
-docker compose -f docker-compose.yaml -f docker-compose.images.yml ps
-```
-
-`service-worker` waits until `sandbox-runner` reports healthy, which can take
-a minute or two on first start.
-
-### Without `/dev/kvm` (no-KVM mode, for testing)
-
-Use this on Docker Desktop for Windows or Mac, or any host without `/dev/kvm`.
-Sandboxed code shares the host kernel, so it is weaker isolation: use it only
-on your own machine, never for code from people you don't trust.
-
-On Windows, follow [Windows (WSL2) without KVM](#windows-wsl2-without-kvm-testing)
-instead: it is this mode with every setting spelled out.
-
-1. Copy the no-KVM override next to the other one:
-
-   ```bash
-   cp ../Docker-files/code-interpreter/v1.10.4/docker-compose.direct.yml .
-   ```
-
-   It switches the runner to `code-interpreter-sandbox-runner-direct` and
-   fixes what that image needs outside a microVM:
-
-   - `/dev/null` mapped in place of `/dev/kvm`.
-   - The Linux capabilities and seccomp profile from upstream's
-     `docker-compose.mac.yml`. Without them the runner restarts in a loop
-     with `unshare: Operation not permitted`.
-   - A health check that works after the runner switches into the sandbox
-     filesystem. Without it the worker never starts.
-   - `SANDBOX_PIPE_ADDON`, which the published direct image is missing.
-     Without it every run fails with `Cannot find module
-     '/sandbox_api/.build/anonymous-pipes.node'`.
-   - `SANDBOX_USE_CGROUPV2=false`, as upstream does for Docker Desktop.
-     Without it hosts lacking a usable cgroup v2 tree fail every run with
-     `Couldn't initialize cgroup 2 user namespace`. The cost: per-run memory
-     and process-count limits are not enforced, one more reason to keep this
-     mode for testing.
-
-2. Build the language runtimes into `./data/pkgs`. The direct runner reads
-   them from there; they are not inside the images. The script runs the build
-   in a temporary Docker container, so it only needs Docker and internet.
-
-   ```bash
-   ./build-packages.sh
-   ```
-
-   The full build (Python with its data-science packages, Node, Bun and their
-   npm packages) is slow: expect a long wait the first time. For a quicker
-   first test, build Python alone:
-
-   ```bash
-   SKIP_PYTHON_PACKAGES=1 SKIP_JS_PACKAGES=1 SKIP_NODE=1 SKIP_BUN=1 ./build-packages.sh
-   ```
-
-   Run the full build later to add the rest; the sandbox only offers the
-   languages it finds in `./data/pkgs`, read when it starts.
-
-3. Start with all three Compose files:
-
-   ```bash
-   docker compose -f docker-compose.yaml -f docker-compose.images.yml \
-     -f docker-compose.direct.yml up -d
-   ```
-
-   Use the same three `-f` flags for `ps`, `logs` and `down`. After building
-   more runtimes, restart the runner with
-   `docker compose -f docker-compose.yaml -f docker-compose.images.yml -f docker-compose.direct.yml restart sandbox-runner`.
-
-## 6. Check it works
-
-```bash
-curl localhost:3112/v1/health          # OK
-curl localhost:13000/ready             # {"status":"ready","checks":{"redis":"ok","s3":"ok"}}
-curl localhost:3190/health             # OK
-
-curl -s localhost:3112/v1/exec \
-  -H 'Content-Type: application/json' \
-  -d '{"lang":"py","code":"print(6*7)\nopen(\"/mnt/data/hello.txt\",\"w\").write(\"hi\")"}'
-```
-
-A working stack answers with `"stdout":"42\n"`, `"code":0` and a `files`
-entry for `hello.txt`. To download that file, use the `session_id` and the
-file's `id` from the response:
-
-```bash
-curl "localhost:3112/v1/download/<session_id>/<file id>?kind=user"   # hi
-```
-
-If `code` is `255` with empty output, NsJail failed to start the run; the
-reason is in `docker logs sandbox-runner`. Logs for everything:
-`docker compose -f docker-compose.yaml -f docker-compose.images.yml logs -f api service-worker sandbox-runner`
-(add `-f docker-compose.direct.yml` in no-KVM mode).
-
-## 7. Point LibreChat at it
-
-In LibreChat's `.env`:
-
-```bash
-LIBRECHAT_CODE_BASEURL=http://<host running the stack>:3112/v1
-```
-
-Use `http://host.docker.internal:3112/v1` if LibreChat runs in Docker on the
-same machine. Restart LibreChat and enable the code interpreter on an agent.
-
-## Stop
-
-```bash
-docker compose -f docker-compose.yaml -f docker-compose.images.yml down      # keep data
-docker compose -f docker-compose.yaml -f docker-compose.images.yml down -v   # also delete Redis/MinIO data
-```
-
-## Ports
+All bound to `127.0.0.1` by `docker-compose.server.yml`.
 
 | Port | Service |
 |---|---|
