@@ -23,6 +23,7 @@ for installing packages at runtime. The smaller `slim`, `alpine` and
 The archive is stored with Git LFS. To fetch only this image:
 
 ```bash
+git lfs install
 GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
 cd Docker-files && git lfs pull --include "open-terminal/**"
 cd open-terminal/v0.14.0
@@ -33,6 +34,19 @@ docker load -i open-terminal.tar.gz
 `docker load` reads the gzipped file directly and prints
 `Loaded image: ghcr.io/open-webui/open-terminal:0.14.0`. A ~134-byte
 `open-terminal.tar.gz` is still an LFS pointer: run the `git lfs pull` again.
+
+If it stays that small after the pull, check what `git lfs pull` printed:
+
+- `Skipping object checkout, Git LFS is not installed for this repository`:
+  the file was downloaded into `.git/lfs` but not put in the folder. Run
+  `git lfs install`, then `git lfs checkout` in the clone (no new
+  download).
+- Nothing at all, yet `git status --short` lists the file as ` M` (modified):
+  `git lfs pull` skips files changed locally. Reset it with
+  `git checkout -- <path to file>`.
+
+`git lfs ls-files` shows the state of each file: `*` downloaded and in place,
+`-` pointer only.
 
 After loading, the clone is not needed to run the container (it holds the
 archive twice, in the folder and in `.git/lfs`); delete it to free about
