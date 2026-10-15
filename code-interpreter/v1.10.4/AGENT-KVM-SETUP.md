@@ -160,6 +160,7 @@ git lfs pull --include "*sandbox-runner.tar.gz"
 
 ```bash
 cd ~
+git lfs install
 [ -d Docker-files ] || GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
 cd Docker-files && git pull && git lfs pull --exclude "*sandbox-runner-direct*"
 ```

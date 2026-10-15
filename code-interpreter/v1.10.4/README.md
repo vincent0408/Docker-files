@@ -127,6 +127,7 @@ wsl -d Ubuntu -- docker compose version   # needs 2.24.4 or later
 Path A does not use the 1.35 GB KVM runner image, so skip it:
 
 ```bash
+git lfs install
 GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
 cd Docker-files && git lfs pull --exclude "*sandbox-runner.tar.gz"
 cd code-interpreter/v1.10.4
@@ -141,6 +142,7 @@ PowerShell:
 
 ```powershell
 ub @'
+git lfs install
 GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
 cd Docker-files && git lfs pull --exclude "*sandbox-runner.tar.gz"
 cd code-interpreter/v1.10.4
@@ -460,6 +462,7 @@ except the direct runner. Already downloaded and loaded the images? Skip to
 
 ```bash
 cd ~
+git lfs install
 [ -d Docker-files ] || GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
 cd Docker-files && git pull && git lfs pull --exclude "*sandbox-runner-direct*"
 cd code-interpreter/v1.10.4
@@ -473,6 +476,7 @@ PowerShell:
 
 ```powershell
 ub @'
+git lfs install
 [ -d Docker-files ] || GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
 cd Docker-files && git pull && git lfs pull --exclude "*sandbox-runner-direct*"
 cd code-interpreter/v1.10.4
@@ -686,6 +690,19 @@ Real files are large: about 1.3G for `code-interpreter-sandbox-runner`,
 **134 bytes** is still an LFS pointer, not the image. If one you need is that
 small, run your `git lfs pull …` command again; it resumes and only fetches
 what is missing.
+
+If it stays that small after the pull, check what `git lfs pull` printed:
+
+- `Skipping object checkout, Git LFS is not installed for this repository`:
+  the file was downloaded into `.git/lfs` but not put in the folder. Run
+  `git lfs install`, then `git lfs checkout` in `~/Docker-files` (no new
+  download).
+- Nothing at all, yet `git status --short` lists the file as ` M` (modified):
+  `git lfs pull` skips files changed locally. Reset it with
+  `git checkout -- <path to file>`.
+
+`git lfs ls-files` shows the state of each file: `*` downloaded and in place,
+`-` pointer only.
 
 **2. Verify the checksums**
 
