@@ -1,29 +1,44 @@
-# Qwen3 FP8 reranker on vLLM, with an OpenAI/Cohere-style /v1/rerank endpoint.
+# Qwen3 FP8 embedding + reranker on vLLM (OpenAI-compatible API).
 # Run from this folder after joining the split weight files (see ../README.md):
 #   docker compose up -d
-# Needs an NVIDIA GPU and the NVIDIA Container Toolkit. Uses the 4B reranker;
-# for the 8B one, change both /models/... paths below.
+# Needs an NVIDIA GPU and the NVIDIA Container Toolkit. Uses the 4B pair; for
+# the 8B pair, change the /models/... paths below.
+
+x-vllm: &vllm
+  image: vllm/vllm-openai:latest   # pin a version you have tested
+  ipc: host
+  volumes:
+    - ./:/models:ro
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  restart: unless-stopped
 
 services:
+  embed:
+    <<: *vllm
+    command:
+      - --model=/models/Qwen3-Embedding-4B-FP8-Dynamic
+      - --served-model-name=qwen3-embedding
+      - --runner=pooling
+      - --max-model-len=8192
+      - --gpu-memory-utilization=0.35   # both servers share one GPU
+    ports:
+      - "127.0.0.1:8001:8000"   # drop 127.0.0.1: to expose to other machines
+
   rerank:
-    image: vllm/vllm-openai:latest   # pin a version you have tested
-    ipc: host
-    volumes:
-      - ./:/models:ro
+    <<: *vllm
     command:
       - --model=/models/Qwen3-Reranker-4B-FP8-Dynamic
       - --served-model-name=qwen3-reranker
       - --runner=pooling
       - --max-model-len=8192
+      - --gpu-memory-utilization=0.35
       - '--hf-overrides={"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}'
       - --chat-template=/models/Qwen3-Reranker-4B-FP8-Dynamic/chat_template.jinja
     ports:
-      - "127.0.0.1:8002:8000"   # drop 127.0.0.1: to expose it to other machines
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
+      - "127.0.0.1:8002:8000"

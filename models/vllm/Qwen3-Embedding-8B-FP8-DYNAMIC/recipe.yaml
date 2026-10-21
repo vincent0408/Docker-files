@@ -1,0 +1,5 @@
+default_stage:
+  default_modifiers:
+    QuantizationModifier:
+      targets: [Linear]
+      scheme: FP8_DYNAMIC
