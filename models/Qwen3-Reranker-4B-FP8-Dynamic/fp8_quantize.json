@@ -1,0 +1,17 @@
+{
+  "model_id": "Qwen/Qwen3-Reranker-4B",
+  "kind": "reranker",
+  "scheme": "FP8_DYNAMIC",
+  "ignore": [
+    "lm_head"
+  ],
+  "source_bytes": 8043614960,
+  "output_bytes": 5189087224,
+  "seconds": 6.894322388994624,
+  "copied_assets": [
+    "modules.json",
+    "config_sentence_transformers.json",
+    "sentence_bert_config.json"
+  ],
+  "created_at": "2026-08-05T12:25:13+00:00"
+}
