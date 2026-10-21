@@ -1,167 +1,171 @@
-# Embedding and reranker models (FP8, for vLLM)
+# Embedding and reranker models (GGUF, for llama.cpp)
 
-FP8 builds of Qwen's Qwen3 text embedding and reranking models, served with
-[vLLM](https://docs.vllm.ai) on an NVIDIA GPU. All based on Qwen's Apache-2.0
-models.
+Qwen3 text embedding and reranking models in Q8_0 GGUF format, for
+[llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`. It runs
+natively on Windows with CUDA, including on V100 GPUs. All are based on
+Qwen's Apache-2.0 models.
 
-| Folder (in `vllm/`) | Use | Size | Source on Hugging Face (pinned revision) |
+| Folder | Use | Size | Source |
 |---|---|---|---|
-| `Qwen3-Embedding-4B-FP8-Dynamic` | Embedding, 2560-dim | 4.4 GB | [`DCC-BS/Qwen3-Embedding-4B-FP8-Dynamic@70cb7033`](https://huggingface.co/DCC-BS/Qwen3-Embedding-4B-FP8-Dynamic/tree/70cb7033c83c32021a6fc57f8121d8fafdb7a42f) |
-| `Qwen3-Reranker-4B-FP8-Dynamic` | Reranking | 5.2 GB | [`DCC-BS/Qwen3-Reranker-4B-FP8-Dynamic@d8c73748`](https://huggingface.co/DCC-BS/Qwen3-Reranker-4B-FP8-Dynamic/tree/d8c73748705813c7ef6a3f69440e8d589db4164f) |
-| `Qwen3-Embedding-8B-FP8-DYNAMIC` | Embedding, 4096-dim | 8.2 GB | [`alexliap/Qwen3-Embedding-8B-FP8-DYNAMIC@3407c74e`](https://huggingface.co/alexliap/Qwen3-Embedding-8B-FP8-DYNAMIC/tree/3407c74e1c9933b2878e8ec3e8deb4065bc02d8d) |
-| `Qwen3-Reranker-8B-FP8` | Reranking | 9.4 GB | [`Forturne/Qwen3-Reranker-8B-FP8@9ee78a3d`](https://huggingface.co/Forturne/Qwen3-Reranker-8B-FP8/tree/9ee78a3d809f9ce3bcef4ab35694459cd93e9369) |
+| `Qwen3-Embedding-4B-Q8_0` | Embedding, 2560-dim | 4.3 GB | Qwen's official GGUF, [`Qwen/Qwen3-Embedding-4B-GGUF@f4602530`](https://huggingface.co/Qwen/Qwen3-Embedding-4B-GGUF/tree/f4602530db1d980e16da9d7d3a70294cf5c190be) |
+| `Qwen3-Reranker-4B-Q8_0` | Reranking | 4.3 GB | Converted from [`Qwen/Qwen3-Reranker-4B@22e68366`](https://huggingface.co/Qwen/Qwen3-Reranker-4B/tree/22e683669bc0f0bd69640a1354a6d0aebcfeede5) |
+| `Qwen3-Embedding-8B-Q8_0` | Embedding, 4096-dim | 8.0 GB | Qwen's official GGUF, [`Qwen/Qwen3-Embedding-8B-GGUF@69d0e58a`](https://huggingface.co/Qwen/Qwen3-Embedding-8B-GGUF/tree/69d0e58a13e463cd99a9b83e3f5fee7c10265fab) |
+| `Qwen3-Reranker-8B-Q8_0` | Reranking | 8.0 GB | Converted from [`Qwen/Qwen3-Reranker-8B@77d193c7`](https://huggingface.co/Qwen/Qwen3-Reranker-8B/tree/77d193c791ed757ca307ee72715aa132723da912) |
 
-All take up to 32K tokens of input and support 100+ languages.
+- **Q8_0** is llama.cpp's 8-bit format; quality is practically the same as
+  full precision (see *Checked* below).
+- **Embedding files** are exactly Qwen's published Q8_0 files. They are also
+  the same files Ollama ships as `qwen3-embedding:4b-q8_0` / `:8b-q8_0`.
+- **Rerankers:** Qwen publishes no GGUF of them, so I converted the official
+  models with llama.cpp's own converter (release b11796,
+  `convert_hf_to_gguf.py --outtype q8_0`). It builds the yes/no scoring head
+  the reranker uses.
+- **4B or 8B?** The 8B models are more accurate (Qwen3-Embedding-8B is among
+  the top open models on the MTEB leaderboard), but need about twice the
+  memory and time.
 
-**4B or 8B?** The 8B pair is more accurate (Qwen3-Embedding-8B is among the
-top open models on the MTEB leaderboard) but needs about twice the GPU memory
-and time: weights of about 4–5 GB per 4B model and 8–9 GB per 8B model, plus
-vLLM's cache.
+### Fitting on a V100
 
-## Requirements
+GPU memory per server with `-c 8192 -ub 8192`. These are llama.cpp's own
+buffer sizes, plus a few hundred MB per process for CUDA itself:
 
-An NVIDIA GPU with vLLM. FP8 runs natively on Ada and Hopper GPUs (compute
-capability 8.9+: RTX 40-series, L4, L40S, H100). On Ampere (RTX 30-series,
-A100) vLLM still loads them with half the memory of bf16, but not faster.
-They are not meant for CPU use.
+| Model | Weights | Context cache | Working buffer | Total, about |
+|---|---|---|---|---|
+| 4B (embedding or reranker) | 4.0 GiB | 1.1 GiB | 0.35 GiB | 5.5 GiB |
+| 8B (embedding or reranker) | 7.7 GiB | 1.1 GiB | 0.47 GiB | 9.3 GiB |
 
-## About these builds
+| V100 | What fits |
+|---|---|
+| 16 GB | the 4B pair (about 11 GiB), or one 8B model plus one 4B model |
+| 32 GB | the 8B pair (about 19 GiB) |
 
-Qwen publishes no FP8 versions, so these are **community conversions** made
-with [llm-compressor](https://github.com/vllm-project/llm-compressor) (scheme
-`FP8_DYNAMIC`, `compressed-tensors` format: FP8 weights per channel, FP8
-activations computed per token at run time; rerankers keep their output head
-in bf16). They contain no code, only weights and configuration.
+`-c 4096 -ub 4096` saves about 0.6 GiB per server. The V100 (Volta) can't
+use FP8 or bf16, but llama.cpp runs Q8_0 on it in fp16.
 
-Each folder is the source repository at the revision above, minus its own
-`.gitattributes`, plus these files copied from Qwen's official repository
-where the build lacked them or had a different version:
+## 1. Install llama.cpp on Windows
 
-- `Qwen3-Reranker-4B-FP8-Dynamic`: `1_LogitScore/config.json`.
-- `Qwen3-Embedding-8B-FP8-DYNAMIC`: `modules.json`, `1_Pooling/config.json`,
-  `config_sentence_transformers.json` (last-token pooling, normalisation,
-  query prompt).
-- `Qwen3-Reranker-8B-FP8`: the Sentence Transformers config, plus Qwen's
-  reranker `chat_template.jinja` and `tokenizer_config.json`. The build had
-  Qwen3's generic chat template instead of the reranker prompt.
+From the [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases),
+download the **Windows CUDA 12** build. The models were tested with release
+**b11796**, so prefer that one or newer. You need two zips:
 
-Now every tokenizer and configuration file matches Qwen's official one,
-except `config.json` and the weight index, which describe the FP8 weights.
+- `llama-<release>-bin-win-cuda-12.x-x64.zip`: the programs.
+- `cudart-llama-bin-win-cuda-12.x-x64.zip`: the CUDA runtime DLLs.
 
-## Download and join
+Unzip both into one folder, for example `C:\llama.cpp`.
 
-The weights are stored with Git LFS. To fetch one model folder:
+- **Use CUDA 12, not CUDA 13.** CUDA 13 dropped support for Volta GPUs like
+  the V100.
+- **Driver:** you need an NVIDIA driver that supports CUDA 12. Check with
+  `nvidia-smi`.
 
-```bash
-git lfs install
-GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/vincent0408/Docker-files.git
-cd Docker-files && git lfs pull --include "models/vllm/Qwen3-Embedding-4B-FP8-Dynamic/**"
-```
+## 2. Download the models
 
-Repeat the last command for each folder you need. Don't use GitHub's
-**Download ZIP**; it contains LFS pointers, not the weights.
-
-GitHub's LFS limit is 2 GB per file, so larger weight files are stored as
-`*.safetensors.part-00`, `part-01`, … Join them inside each model folder:
-
-```bash
-for p in *.safetensors.part-00; do
-  f="${p%.part-00}"; cat "$f".part-* > "$f" && rm "$f".part-*
-done
-sha256sum -c SHA256SUMS        # every line must say OK  (macOS: shasum -a 256 -c SHA256SUMS)
-```
-
-Windows PowerShell:
+Each model is split into pieces under 2 GB (GitHub's limit) with
+llama.cpp's `gguf-split`. **llama-server loads them directly from the first
+piece**, so there is nothing to join. With Git LFS, in PowerShell:
 
 ```powershell
-Get-ChildItem *.safetensors.part-00 | ForEach-Object {
-  $f = $_.FullName -replace '\.part-00$', ''
-  cmd /c copy /b ((Get-ChildItem "$f.part-*" | Sort-Object Name).FullName -join '+') "$f"
-  Remove-Item "$f.part-*"
-}
+git lfs install
+$env:GIT_LFS_SKIP_SMUDGE = 1
+git clone https://github.com/vincent0408/Docker-files.git
+Remove-Item Env:GIT_LFS_SKIP_SMUDGE
+cd Docker-files
+git lfs pull --include "models/Qwen3-Embedding-4B-Q8_0/**"
+git lfs pull --include "models/Qwen3-Reranker-4B-Q8_0/**"
 ```
 
-Then compare `Get-FileHash *.safetensors` with the hashes in `SHA256SUMS`.
+Or download each `.gguf` piece in a browser from the model folder on GitHub
+(open the file, then **Download raw file**), keeping all pieces of a model in
+one folder. Don't use **Download ZIP**; it contains LFS pointers, not the
+weights.
 
-## Serve with vLLM
+To check the files, compare `Get-FileHash *.gguf` with the hashes in each
+folder's `SHA256SUMS`. A ~134-byte `.gguf` is still an LFS pointer; run the
+`git lfs pull` again.
 
-[`vllm/docker-compose.yml`](vllm/docker-compose.yml) runs an embedding server
-and a reranker server on one GPU. From the `models/vllm` folder, after
-joining:
+## 3. Start the servers
+
+One server per model, in two PowerShell windows. Point `-m` at the
+**first piece**:
+
+```powershell
+# Embedding server, port 8001
+C:\llama.cpp\llama-server.exe -m models\Qwen3-Embedding-4B-Q8_0\Qwen3-Embedding-4B-Q8_0-00001-of-00003.gguf `
+  --embedding --pooling last -ngl 99 -c 8192 -ub 8192 --host 127.0.0.1 --port 8001
+
+# Reranker server, port 8002
+C:\llama.cpp\llama-server.exe -m models\Qwen3-Reranker-4B-Q8_0\Qwen3-Reranker-4B-Q8_0-00001-of-00003.gguf `
+  --reranking -ngl 99 -c 8192 -ub 8192 --host 127.0.0.1 --port 8002
+```
+
+For the 8B models the first pieces are
+`Qwen3-Embedding-8B-Q8_0-00001-of-00005.gguf` and
+`Qwen3-Reranker-8B-Q8_0-00001-of-00005.gguf`.
+
+| Flag | What it does |
+|---|---|
+| `--embedding --pooling last` | Serve embeddings, using the last token's vector. That is how Qwen3-Embedding is meant to be used. |
+| `--reranking` | Enables `/v1/rerank`. The reranker's GGUF already tells llama-server to score with its yes/no head. |
+| `-ngl 99` | Puts the whole model on the GPU. |
+| `-c 8192 -ub 8192` | Longest input, in tokens. For embeddings and reranking a whole input must fit in one batch, so keep `-ub` equal to `-c`. The models accept up to 32768 if memory allows. |
+| `--host 0.0.0.0` | Use this instead of `127.0.0.1` to let other machines reach the server. Also allow the port in Windows Firewall. |
+
+## 4. Use them
+
+PowerShell (works in Windows PowerShell 5 and PowerShell 7):
+
+```powershell
+# Embeddings: one query (with the instruction, see below) and one document
+$query = "Instruct: Given a web search query, retrieve relevant passages that answer the query`nQuery:What is the capital of China?"
+$body  = @{ input = @($query, "The capital of China is Beijing.") } | ConvertTo-Json
+$r = Invoke-RestMethod http://localhost:8001/v1/embeddings -Method Post -ContentType "application/json" -Body $body
+$r.data | ForEach-Object { "vector $($_.index): $($_.embedding.Count) numbers" }
+
+# Reranking
+$body = @{ query = "What is the capital of China?"; documents = @("The capital of China is Beijing.", "Gravity attracts bodies.") } | ConvertTo-Json
+(Invoke-RestMethod http://localhost:8002/v1/rerank -Method Post -ContentType "application/json" -Body $body).results
+```
+
+From Linux/macOS or Git Bash:
 
 ```bash
-docker compose up -d
-docker compose logs -f     # wait for "Application startup complete" from both
+curl -s localhost:8002/v1/rerank -H 'Content-Type: application/json' \
+  -d '{"query":"What is the capital of China?","documents":["The capital of China is Beijing.","Gravity attracts bodies."]}'
 ```
 
-It needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-It serves the 4B pair; for the 8B pair, change the `/models/...` paths.
-
-| Server | Port | Model name | Endpoint |
-|---|---|---|---|
-| Embedding | 8001 | `qwen3-embedding` | `/v1/embeddings` (OpenAI-compatible) |
-| Reranker | 8002 | `qwen3-reranker` | `/v1/rerank` (Jina/Cohere-style) |
-
-The settings that matter:
-
-- **Both servers:** `--runner pooling`. Older vLLM versions use `--task embed`
-  instead for the embedding server.
-- **Reranker:**
-  - `--hf-overrides '{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}'`
-    makes vLLM score each document by the model's `yes`/`no` answer.
-  - `--chat-template …/chat_template.jinja` is Qwen's reranker prompt.
-- **`--gpu-memory-utilization 0.35` each.** vLLM reserves this share of GPU
-  memory per server. Raise it if each model has its own GPU.
-- **`--max-model-len 8192`** limits input length to save memory. The models
-  accept up to 32768.
-
-To run without Docker, the same flags work with `vllm serve`:
-
-```bash
-vllm serve ./Qwen3-Embedding-4B-FP8-Dynamic --served-model-name qwen3-embedding \
-  --runner pooling --max-model-len 8192 --port 8001
-```
-
-## Use
-
-```bash
-curl -s localhost:8001/v1/embeddings -H 'Content-Type: application/json' -d '{
-  "model": "qwen3-embedding",
-  "input": ["Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:What is the capital of China?",
-            "The capital of China is Beijing."]
-}'
-
-curl -s localhost:8002/v1/rerank -H 'Content-Type: application/json' -d '{
-  "model": "qwen3-reranker",
-  "query": "What is the capital of China?",
-  "documents": ["The capital of China is Beijing.", "Gravity attracts bodies."]
-}'
-```
-
-- **Embedding queries:** Qwen's embedding models work best when search
-  queries (not the documents being indexed) start with a one-line task
-  instruction, `Instruct: <task>\nQuery:<the query>`, as above. Qwen reports
-  a 1–5% gain.
-- **Reranker:** it takes the plain query and documents. The Beijing document
-  should get a `relevance_score` close to 1, and the other close to 0.
+- **Embeddings:** `/v1/embeddings` is OpenAI-compatible. The `model` field is
+  optional, since each server has one model. Vectors come back normalised
+  (length 1).
+- **Embedding queries:** Qwen's embedding models work best when **search
+  queries** (not the documents being indexed) start with a task instruction,
+  `Instruct: <task>\nQuery:<the query>`, as above. Qwen reports a 1–5% gain.
+- **Reranking:** `/v1/rerank` takes `query` and `documents` and returns
+  `results` with `index` and `relevance_score` (Jina/Cohere-style). The
+  Beijing document should score close to 1 and the other close to 0.
 
 ## Checked
 
-- Every file matches the SHA256 its source repository publishes at the pinned
-  revision, and rejoining the split parts reproduces it exactly.
-- The tokenizers produce the same token IDs as Qwen's official ones. For the
-  4B builds this was tested on mixed-language, code and prompt text; the 8B
-  builds' tokenizer files are byte-identical to Qwen's.
-- The 4B pair, loaded on CPU with the weights expanded to bf16, gives results
-  close to the full-precision models on Qwen's example:
-  - embedding similarity 0.752 vs 0.751 for the matching document, and 0.103
-    vs 0.093 for the unrelated one;
-  - reranker score 6.19 vs 6.38 for the match, and −12.4 vs −11.8 for the
-    unrelated one.
+All with llama-server built from llama.cpp **b11796** on Linux (CPU), loading
+each model from its first split piece:
 
-  The 4B builds' authors also report MTEB Wikipedia retrieval/reranking scores
-  within about ±0.001 of bf16.
-- **Not tested here:** the 8B models (too large for the test machine's memory)
-  and anything on vLLM or a GPU. `docker-compose.yml` is checked to parse with
-  Docker Compose, and the vLLM flags follow vLLM's documentation for Qwen3
-  models.
+- **Embedding** similarity for a query and two documents (matching /
+  unrelated):
+
+  | Model | Q8_0 | Full precision |
+  |---|---|---|
+  | 4B | 0.748 / 0.094 | 0.751 / 0.093 |
+  | 8B | 0.751 / 0.080 | — |
+
+- **Reranker** `relevance_score` for "What is the capital of China?":
+
+  | Document | 4B | 8B |
+  |---|---|---|
+  | "The capital of China is Beijing." | 0.9985 (full precision: 0.9983) | 0.994 |
+  | A paraphrase about Beijing | 0.955 | 0.977 |
+  | Gravity sentence | 0.000 | 0.000 |
+  | "Paris is the capital of France." | 0.000 | 0.000 |
+
+- The embedding files' SHA256s match Qwen's published ones.
+- **Not tested here:** the Windows build and running on a GPU (none
+  available). These are the same llama.cpp release and model files, but CUDA
+  offload on a V100 has not been tried.
