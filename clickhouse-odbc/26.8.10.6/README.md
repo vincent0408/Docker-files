@@ -1,7 +1,6 @@
 # ClickHouse 26.8.10.6 + Oracle ODBC image
 
-`docker save` archive (gzipped) of `clickhouse-odbc:26.8.10.6`, built from the
-`Dockerfile` in this folder:
+`clickhouse-odbc:26.8.10.6`, built from the `Dockerfile` in this folder:
 
 - base `clickhouse/clickhouse-server:26.8.10.6` (Ubuntu 22.04)
 - `clickhouse-odbc-bridge` 25.1.5.31 (SHA256-checked deb from packages.clickhouse.com)
@@ -15,22 +14,33 @@ start, `oracle-entrypoint.sh` registers `$ORACLE_HOME` in the `ld.so` cache
 processes that don't inherit `LD_LIBRARY_PATH` (`podman exec`, `ldd`, the bridge
 started via `clickhouse su`), then runs the stock `/entrypoint.sh`.
 
-| File | Image | Size |
-|---|---|---|
-| `clickhouse-odbc-26.8.10.6.tar.gz` | `clickhouse-odbc:26.8.10.6` | 1.1 GB (3.7 GB loaded) |
+The image archive is not in the repo (the repository is over its Git LFS budget).
+Build it on the target machine instead (see below).
 
-## Load and run
+## Build
+
+Put the bridge deb next to the Dockerfile and build. Tag it exactly as below: that
+is the name `start-clickhouse.sh` runs, and plain `podman build -t clickhouse-odbc:...`
+would name it `localhost/clickhouse-odbc:...` instead.
 
 ```bash
-git lfs pull --include "clickhouse-odbc/**"
 cd clickhouse-odbc/26.8.10.6
-sha256sum -c SHA256SUMS                     # clickhouse-odbc-26.8.10.6.tar.gz: OK
-CH_PASS=... ./start-clickhouse.sh           # loads the archive and starts the container
+curl -fLO https://packages.clickhouse.com/deb/pool/main/c/clickhouse/clickhouse-odbc-bridge_25.1.5.31_amd64.deb
+podman build -t docker.io/library/clickhouse-odbc:26.8.10.6 .
 ```
 
-`start-clickhouse.sh` loads the archive on every run. The old version skipped
-the load when an image with the same tag already existed, so a rebuilt archive
-was never picked up. It mounts the Instant Client at the same path
+The deb's SHA256 is checked during the build. `--build-arg APT_MIRROR=...` changes the
+Ubuntu mirror (default `http://ubuntu.cs.nctu.edu.tw/ubuntu/`; apt uses plain HTTP, so
+the TLS proxy CA is not needed inside the build).
+
+## Run
+
+```bash
+CH_PASS=... ./start-clickhouse.sh
+```
+
+`start-clickhouse.sh` loads `clickhouse-odbc-26.8.10.6.tar.gz` if it is in the folder
+(every run, so an older same-tag image is replaced), otherwise uses the built image. It mounts the Instant Client at the same path
 (`/oracle/product/19.0.0.0/instantclient_19_23`) and `./odbc.ini` at
 `/etc/odbc.ini`. `Driver=` in `odbc.ini` must be the container path, for example
 `/oracle/product/19.0.0.0/instantclient_19_23/libsqora.so.19.1`.
@@ -50,17 +60,3 @@ Tested with Instant Client 19.23 (basic + odbc) and no database running: `ldd`
 reports no missing libraries, and both `isql` and `odbc()` return
 `ORA-12541: TNS:no listener`. That error comes from Oracle's client, so the
 driver and its libraries loaded.
-
-## Rebuild
-
-Put `clickhouse-odbc-bridge_25.1.5.31_amd64.deb` (from
-`https://packages.clickhouse.com/deb/pool/main/c/clickhouse/`) next to the
-Dockerfile, then:
-
-```bash
-docker build --provenance=false --sbom=false -t clickhouse-odbc:26.8.10.6 .
-docker save docker.io/library/clickhouse-odbc:26.8.10.6 | gzip > clickhouse-odbc-26.8.10.6.tar.gz
-```
-
-`--build-arg APT_MIRROR=...` changes the Ubuntu mirror (default
-`http://ubuntu.cs.nctu.edu.tw/ubuntu/`).

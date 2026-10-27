@@ -8,11 +8,12 @@
 #     -e CLICKHOUSE_USER=vector -e CLICKHOUSE_PASSWORD=... \
 #     -v /oracle/product/19.0.0.0/instantclient_19_23:/oracle/product/19.0.0.0/instantclient_19_23:ro \
 #     -v ./odbc.ini:/etc/odbc.ini:ro \
-#     clickhouse-odbc:26.8.10.6
+#     docker.io/library/clickhouse-odbc:26.8.10.6
 #
 # Mount the Instant Client somewhere else with -e ORACLE_HOME=<container path>.
 
-FROM clickhouse/clickhouse-server:26.8.10.6
+# Fully qualified so podman doesn't stop at short-name resolution.
+FROM docker.io/clickhouse/clickhouse-server:26.8.10.6
 
 # Bridge versions are interchangeable with any clickhouse-server (upstream:
 # "All versions are compatible with each other").
@@ -24,6 +25,8 @@ ARG BRIDGE_SHA256=e27700953e6abe92f321279376168d48be9de048d67b8bbaa24f08a16a1f44
 ARG APT_MIRROR=http://ubuntu.cs.nctu.edu.tw/ubuntu/
 
 COPY clickhouse-odbc-bridge_${BRIDGE_VERSION}_amd64.deb /tmp/
+# Plain COPY + chmod (not COPY --chmod) so older podman/buildah can build it.
+COPY oracle-entrypoint.sh /usr/local/bin/oracle-entrypoint.sh
 
 RUN set -eux; \
     run() { for i in 1 2 3 4 5; do "$@" && return 0; sleep 5; done; return 1; }; \
@@ -41,7 +44,8 @@ RUN set -eux; \
     dpkg -i /tmp/clickhouse-odbc-bridge_${BRIDGE_VERSION}_amd64.deb; \
     rm /tmp/clickhouse-odbc-bridge_${BRIDGE_VERSION}_amd64.deb; \
     apt-get clean && rm -rf /var/lib/apt/lists/*; \
-    test -e /usr/lib/x86_64-linux-gnu/libaio.so.1
+    test -e /usr/lib/x86_64-linux-gnu/libaio.so.1; \
+    chmod 755 /usr/local/bin/oracle-entrypoint.sh
 
 ENV ORACLE_HOME=/oracle/product/19.0.0.0/instantclient_19_23 \
     ODBCSYSINI=/etc \
@@ -51,7 +55,5 @@ ENV ORACLE_HOME=/oracle/product/19.0.0.0/instantclient_19_23 \
 ENV LD_LIBRARY_PATH=${ORACLE_HOME} \
     TNS_ADMIN=${ORACLE_HOME}/network/admin \
     PATH=${ORACLE_HOME}:${PATH}
-
-COPY --chmod=755 oracle-entrypoint.sh /usr/local/bin/oracle-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/oracle-entrypoint.sh"]

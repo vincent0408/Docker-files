@@ -13,8 +13,10 @@ ODBCINI=./odbc.ini
 # Host Oracle Instant Client dir -> $ORACLE_HOME in the container
 ORACLE_HOME=/oracle/product/19.0.0.0/instantclient_19_23
 
-# Always (re)load: an older image with the same tag would otherwise keep being used.
-podman load -i clickhouse-odbc-26.8.10.6.tar.gz
+# Load the archive when it is here (built locally instead: skipped). Always reload, so an older
+# image with the same tag is not kept.
+if [ -f clickhouse-odbc-26.8.10.6.tar.gz ]; then podman load -i clickhouse-odbc-26.8.10.6.tar.gz; fi
+podman image exists "$IMAGE" || { echo "no $IMAGE: build it (see README) or put the .tar.gz here" >&2; exit 1; }
 podman rm -f clickhouse 2>/dev/null || true
 
 # 8123 = HTTP (Vector, DBeaver, curl). Add -p 9000:9000 for native-protocol clients.
