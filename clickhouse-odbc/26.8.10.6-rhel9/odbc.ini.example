@@ -1,0 +1,7 @@
+; Copy to odbc.ini next to start-clickhouse.sh and fill in. Mounted at /etc/odbc.ini.
+[ORA]
+Driver     = Oracle
+; EZConnect //host:port/service_name, or a tnsnames.ora alias (then mount ./tns, see README)
+ServerName = //dbhost.example.com:1521/ORCLPDB1
+UserID     = scott
+Password   = tiger

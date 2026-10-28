@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-# ClickHouse server for Vector logs. Re-run safely (data lives in the clickhouse-data volume).
+# ClickHouse server for Vector logs (RHEL 9 image). Re-run safely (data lives in the clickhouse-data volume).
 set -euo pipefail
 cd "$(dirname "$0")"
 
-IMAGE=docker.io/library/clickhouse-odbc:26.8.10.6
+IMAGE=docker.io/library/clickhouse-odbc:26.8.10.6-rhel9
 CH_USER=vector
 CH_PASS="${CH_PASS:?export CH_PASS first (must match start-vector.sh)}"
 TIMEZONE=Asia/Taipei                  # display tz + day partitions (image default is UTC)
 
-# Host ODBC config -> container /etc (Driver= paths inside must point at container paths)
+# Host ODBC DSNs -> /etc/odbc.ini. Use "Driver = Oracle" (registered in the image's odbcinst.ini).
 ODBCINI=./odbc.ini
-# Host Oracle Instant Client dir -> $ORACLE_HOME in the container
-ORACLE_HOME=/oracle/product/19.0.0.0/instantclient_19_23
+# Optional: a folder with tnsnames.ora / sqlnet.ora -> /etc/oracle ($TNS_ADMIN). Not needed for
+# EZConnect (ServerName = //host:1521/service).
+TNS_DIR=./tns
 
-# Load the archive when it is here (built locally instead: skipped). Always reload, so an older
-# image with the same tag is not kept.
-if [ -f clickhouse-odbc-26.8.10.6.tar.gz ]; then podman load -i clickhouse-odbc-26.8.10.6.tar.gz; fi
-podman image exists "$IMAGE" || { echo "no $IMAGE: build it (see README) or put the .tar.gz here" >&2; exit 1; }
+podman image exists "$IMAGE" || { echo "no $IMAGE: build it first (see README)" >&2; exit 1; }
 podman rm -f clickhouse 2>/dev/null || true
+
+tns=()
+[ -d "$TNS_DIR" ] && tns=(-v "$(realpath "$TNS_DIR"):/etc/oracle:ro")
 
 # 8123 = HTTP (Vector, DBeaver, curl). Add -p 9000:9000 for native-protocol clients.
 podman run -d --name clickhouse --restart=always \
@@ -26,9 +27,8 @@ podman run -d --name clickhouse --restart=always \
      --ulimit nofile=65535:65535 \
      -v clickhouse-data:/var/lib/clickhouse \
      -v clickhouse-logs:/var/log/clickhouse-server \
-     -v "$ODBCINI:/etc/odbc.ini:ro" \
-     -v "$ORACLE_HOME:$ORACLE_HOME:ro" \
-     -e ORACLE_HOME="$ORACLE_HOME" \
+     -v "$(realpath "$ODBCINI"):/etc/odbc.ini:ro" \
+     "${tns[@]}" \
      -e CLICKHOUSE_USER="$CH_USER" -e CLICKHOUSE_PASSWORD="$CH_PASS" \
      "$IMAGE"
 
