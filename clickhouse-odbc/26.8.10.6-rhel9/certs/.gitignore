@@ -1,0 +1,4 @@
+# Extra CA certificates for the build (corporate TLS proxy). Do not commit them.
+*
+!.gitignore
+!README.md
