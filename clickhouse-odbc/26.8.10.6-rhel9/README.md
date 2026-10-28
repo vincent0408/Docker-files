@@ -75,6 +75,14 @@ ENGINE = ODBC('DSN=ORA', 'SCOTT', 'EMP');
 SELECT * FROM logs.ora_emp WHERE SAL > 1000;    -- WHERE is pushed down to Oracle
 ```
 
+ClickHouse sends `SELECT "EMPNO", ... FROM "SCOTT"."EMP"` with every name in double quotes, and
+quoted names are case-sensitive in Oracle. Write the schema, table and column names exactly as
+`ALL_TAB_COLUMNS` shows them (normally UPPERCASE). `'scott', 'emp'` gives `ORA-00942: table or view
+does not exist`, and a lowercase column gives `ORA-00904: invalid identifier`. Pass the schema as
+its own argument, not as `'SCOTT.EMP'`. `ORA-00942` also means the DSN's `UserID` has no `SELECT`
+grant on the table. The exact SQL is in the server log:
+`grep 'Query: SELECT' /var/log/clickhouse-server/clickhouse-server.log`.
+
 The `odbc('DSN=ORA', 'SCOTT', 'EMP')` table function, and an `ODBC` table without a column
 list, do **not** work with Oracle's driver (19c or 23ai): they need the bridge's automatic
 column discovery, and Oracle's driver rejects the calls it makes (`HYT00 Timeout expired` for
