@@ -4,8 +4,9 @@
 #   podman build -t docker.io/library/clickhouse-odbc:26.8.10.6-rhel9 .
 #   CH_PASS=... ./start-clickhouse.sh
 #
-# Behind a TLS-inspecting proxy, put its CA (.pem/.crt) in certs/ before building and pass the
-# proxy with --build-arg https_proxy=... (see README).
+# TLS certificate checks are OFF for every download during the build (sslverify=False below), so
+# a TLS-inspecting proxy works without its CA. Package integrity still rests on the GPG checks.
+# Pass an HTTP proxy with --build-arg https_proxy=... (see README).
 
 FROM registry.access.redhat.com/ubi9/ubi:9.8
 
@@ -42,7 +43,8 @@ RUN set -eux; \
         'gpgkey=https://yum.oracle.com/RPM-GPG-KEY-oracle-ol9' \
         'gpgcheck=1' \
         'enabled=1' > /etc/yum.repos.d/oracle-instantclient23.repo; \
-    dnf -y install --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+    # sslverify=False: build-time only (command-line option, not written to the repo files).
+    dnf -y install --setopt=sslverify=False --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
         "clickhouse-server-${CLICKHOUSE_VERSION}" \
         "clickhouse-client-${CLICKHOUSE_VERSION}" \
         "clickhouse-common-static-${CLICKHOUSE_VERSION}" \

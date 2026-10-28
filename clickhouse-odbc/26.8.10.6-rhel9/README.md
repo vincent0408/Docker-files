@@ -34,9 +34,15 @@ Run it again in a running container with `podman exec clickhouse check-deps.sh`.
 
 ```bash
 cd clickhouse-odbc/26.8.10.6-rhel9
-cp /path/to/yuanta-websense-ca.pem certs/      # TLS-inspecting proxy CA, if any (not committed)
 podman build -t docker.io/library/clickhouse-odbc:26.8.10.6-rhel9 .
 ```
+
+TLS certificate checks are turned off for all downloads during the build
+(`dnf --setopt=sslverify=False`), so the corporate TLS-inspecting proxy needs no CA. This is
+build-time only: the image's repo files keep normal checking. Package integrity still relies on
+GPG signatures (Oracle packages, ClickHouse repo metadata), but the GPG keys are themselves
+downloaded over the now-unverified HTTPS. A CA dropped into `certs/` is still added to the image's
+trust store (useful at runtime), but the build no longer needs it.
 
 If the build host needs an HTTP proxy, add
 `--build-arg https_proxy=http://proxy:port --build-arg http_proxy=http://proxy:port`
