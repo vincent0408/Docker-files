@@ -1,0 +1,44 @@
+#!/usr/bin/env bpftrace
+/*
+ * Records who generates SIGSEGV for the sglang scheduler, and the last
+ * user page fault the kernel saw on that thread.
+ *
+ * Run on the HOST (sees processes inside containers):
+ *   sudo dnf install -y bpftrace
+ *   sudo bpftrace debug/sglang-segv-trace.bt | tee /var/tmp/sglang-segv.log
+ *
+ * How to read the result when the scheduler dies:
+ *   code=1 (SEGV_MAPERR) / 2 (SEGV_ACCERR), kstack shows exc_page_fault
+ *       -> a real CPU page fault. Compare fault addr/ip with the core dump:
+ *          if fault ip == libcuda+0x458838 and addr != rbx+0x960c, the CPU
+ *          itself produced a wrong address (hardware).
+ *   code=0 (SI_USER) / -6 (SI_TKILL), kstack shows kill/tgkill
+ *       -> the signal was SENT by "sender" (comm/pid printed). Software.
+ *   The second line with code=-6 from the scheduler itself is the
+ *   faulthandler re-raise and can be ignored.
+ */
+
+tracepoint:exceptions:page_fault_user
+/comm == "sglang::schedul"/
+{
+	@addr[tid] = args->address;
+	@ip[tid] = args->ip;
+	@err[tid] = args->error_code;
+}
+
+tracepoint:signal:signal_generate
+/args->sig == 11/
+{
+	time("%H:%M:%S ");
+	printf("SIGSEGV sender=%s pid=%d tid=%d -> target=%s pid=%d code=%d result=%d\n",
+	       comm, pid, tid, args->comm, args->pid, args->code, args->result);
+	printf("  last user #PF on target tid: addr=0x%lx ip=0x%lx err=0x%lx\n",
+	       @addr[args->pid], @ip[args->pid], @err[args->pid]);
+	printf("  kernel stack:%s\n", kstack);
+	printf("  user stack:%s\n", ustack(8));
+}
+
+END
+{
+	clear(@addr); clear(@ip); clear(@err);
+}
